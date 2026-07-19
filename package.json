@@ -1,0 +1,22 @@
+{
+  "name": "discord-vc-recorder-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "bot": "node bot/bot.js",
+    "api": "node api/server.js",
+    "init-db": "node api/db.js",
+    "serve-web": "node api/server.js",
+    "cleanup": "node scripts/cleanupExpired.js"
+  },
+  "dependencies": {
+    "@discordjs/opus": "^0.9.0",
+    "@discordjs/voice": "^0.16.1",
+    "better-sqlite3": "^9.2.2",
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-session": "^1.18.1"
+  }
+}

@@ -1,0 +1,45 @@
+const { Client, GatewayIntentBits, Events, REST, Routes, SlashCommandBuilder, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus } = require('@discordjs/voice');
+const Recorder = require('./recorder');
+const { createClip } = require('./clipManager');
+const { loadConfig, log, parseDuration, formatDuration } = require('./utils');
+const config = loadConfig();
+const db = require('../api/db');
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
+const active = new Map();
+function isBotAdmin(guild, member) {
+  return guild.ownerId === member.id || member.permissions?.has(PermissionFlagsBits.ManageGuild) || Boolean(db.prepare('SELECT 1 FROM server_admins WHERE guild_id=? AND user_id=?').get(guild.id, member.id));
+}
+function getServerSettings(guildId) {
+  db.prepare('INSERT OR IGNORE INTO servers(guild_id, created_at) VALUES(?, ?)').run(guildId, Date.now());
+  return db.prepare('SELECT * FROM servers WHERE guild_id=?').get(guildId);
+}
+const commands = [
+  new SlashCommandBuilder().setName('record').setDescription('Recording controls').addSubcommand(s => s.setName('join').setDescription('Join your voice channel')).addSubcommand(s => s.setName('leave').setDescription('Leave and stop recording')).addSubcommand(s => s.setName('status').setDescription('Show recorder status')),
+  new SlashCommandBuilder().setName('clip').setDescription('Create a clip').addStringOption(o => o.setName('duration').setDescription('Example: 30s or 2m')),
+  new SlashCommandBuilder().setName('clipthat').setDescription('Create a clip').addStringOption(o => o.setName('duration').setDescription('Example: 30s or 2m')),
+  new SlashCommandBuilder().setName('clips').setDescription('Clip actions').addSubcommand(s => s.setName('list').setDescription('List recent clips')).addSubcommand(s => s.setName('edit').setDescription('Get editor link').addStringOption(o => o.setName('id').setDescription('Clip id').setRequired(true))),
+  new SlashCommandBuilder().setName('settings').setDescription('Show server recording settings')
+].map(c => c.toJSON());
+async function recordClip(interaction, duration) {
+  const state = active.get(interaction.guildId); if (!state) throw new Error('I am not recording in this server. Ask an admin to use /record join.');
+  const clip = await createClip({ guildId: interaction.guildId, createdBy: interaction.user.id, duration, audio: state.recorder.extract(duration), members: [...interaction.guild.members.cache.values()] });
+  const settings = getServerSettings(interaction.guildId);
+  const channel = interaction.guild.channels.cache.get(settings.clips_channel_id) || interaction.guild.channels.cache.find(c => c.name === config.bot.defaultClipsChannel) || interaction.channel;
+  const embed = new EmbedBuilder().setTitle(`🎤 Clip: ${formatDuration(duration)}`).setDescription(`By: <@${interaction.user.id}>\nUsers: ${clip.users_involved.map(u => u.name).join(', ')}`).setTimestamp();
+  const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`play:${clip.clip_id}`).setLabel('Play in VC').setStyle(ButtonStyle.Primary), new ButtonBuilder().setURL(`${config.api.baseUrl}/editor.html?clip_id=${clip.clip_id}`).setLabel('Edit').setStyle(ButtonStyle.Link));
+  await channel.send({ embeds: [embed], files: [clip.audioPath], components: [row] });
+  return clip;
+}
+client.once(Events.ClientReady, async ready => { log(`Logged in as ${ready.user.tag}`); await new REST({ version: '10' }).setToken(config.discord.token).put(Routes.applicationCommands(config.discord.clientId), { body: commands }); });
+client.on(Events.InteractionCreate, async interaction => { try {
+  if (interaction.isButton() && interaction.customId.startsWith('play:')) { const state = active.get(interaction.guildId); if (!state) return interaction.reply({ content: 'Not connected to voice.', ephemeral: true }); const clipId = interaction.customId.split(':')[1]; const clip = require('../api/db').prepare('SELECT edited_audio_path, original_audio_path FROM clips WHERE id=?').get(clipId); if (!clip) return interaction.reply({ content: 'Clip no longer exists.', ephemeral: true }); const player = createAudioPlayer(); const subscription = state.connection.subscribe(player); state.connection.rejoin({ selfMute: false }); player.play(createAudioResource(clip.edited_audio_path || `${clip.original_audio_path}/original.mp3`)); player.once(AudioPlayerStatus.Idle, () => { subscription.unsubscribe(); state.connection.rejoin({ selfMute: true }); }); return interaction.reply({ content: 'Playing clip in voice.', ephemeral: true }); }
+  if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName === 'record') { const sub = interaction.options.getSubcommand(); if (sub === 'join') { if (!isBotAdmin(interaction.guild, interaction.member)) throw new Error('Bot admin access required. The server owner can grant it from the dashboard.'); const vc = interaction.member.voice.channel; if (!vc) throw new Error('Join a voice channel first.'); active.get(interaction.guildId)?.connection.destroy(); const settings = getServerSettings(interaction.guildId); const connection = joinVoiceChannel({ channelId: vc.id, guildId: interaction.guildId, adapterCreator: interaction.guild.voiceAdapterCreator, selfDeaf: false, selfMute: true }); const recorder = new Recorder(settings.buffer_size_minutes || config.bot.defaultBufferMinutes); recorder.start(connection); active.set(interaction.guildId, { connection, recorder }); return interaction.reply(`Recording started in **${vc.name}**.`); } if (sub === 'leave') { if (!isBotAdmin(interaction.guild, interaction.member)) throw new Error('Bot admin access required.'); const state = active.get(interaction.guildId); state?.recorder.stop(); state?.connection.destroy(); active.delete(interaction.guildId); return interaction.reply('Recording stopped.'); } const state = active.get(interaction.guildId); return interaction.reply(state ? `Recording: ${state.recorder.status().users} speakers buffered (${state.recorder.status().bufferMinutes} min).` : 'Not recording.'); }
+  if (interaction.commandName === 'clipthat' || interaction.commandName === 'clip') { const duration = parseDuration(interaction.options.getString('duration')); if (!duration) throw new Error('Use a duration such as `30s` or `2m`.'); await interaction.deferReply({ ephemeral: true }); const clip = await recordClip(interaction, duration); return interaction.editReply(`Created clip ${clip.clip_id}.`); }
+  if (interaction.commandName === 'clips') { if (interaction.options.getSubcommand() === 'edit') return interaction.reply({ content: `${config.api.baseUrl}/editor.html?clip_id=${interaction.options.getString('id')}`, ephemeral: true }); const rows = require('../api/db').prepare('SELECT id, duration FROM clips WHERE guild_id=? ORDER BY created_at DESC LIMIT 10').all(interaction.guildId); return interaction.reply(rows.length ? rows.map(c => `• ${c.id} — ${formatDuration(c.duration)}`).join('\n') : 'No clips yet.'); }
+  if (interaction.commandName === 'settings') { if (!isBotAdmin(interaction.guild, interaction.member)) throw new Error('Bot admin access required.'); const settings = getServerSettings(interaction.guildId); return interaction.reply({ content: `Buffer: ${settings.buffer_size_minutes} min\nRetention: ${settings.retention_days} days\nChannel: ${settings.clips_channel_id ? `<#${settings.clips_channel_id}>` : `#${config.bot.defaultClipsChannel}`}`, ephemeral: true }); }
+} catch (error) { log(error.stack || error.message); if (interaction.deferred) interaction.editReply(`Error: ${error.message}`); else interaction.reply({ content: `Error: ${error.message}`, ephemeral: true }); } });
+client.on(Events.MessageCreate, async message => { if (message.author.bot || !message.content.startsWith(`${config.bot.commandPrefix}clipthat`)) return; const duration = parseDuration(message.content.split(/\s+/)[1]); try { const clip = await recordClip({ guildId: message.guildId, user: message.author, guild: message.guild, channel: message.channel }, duration); await message.reply(`Created clip ${clip.clip_id}.`); } catch (e) { await message.reply(`Error: ${e.message}`); } });
+if (!config.discord.token || !config.discord.clientId) throw new Error('Set Discord credentials in config.json or environment variables.');
+client.login(config.discord.token);

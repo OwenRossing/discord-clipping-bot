@@ -1,0 +1,17 @@
+const fs = require('fs');
+const path = require('path');
+const Database = require('better-sqlite3');
+const { loadConfig } = require('../bot/utils');
+const config = loadConfig();
+const dbPath = path.resolve(process.cwd(), config.storage.databasePath);
+fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+const db = new Database(dbPath);
+db.pragma('foreign_keys = ON');
+db.exec(`CREATE TABLE IF NOT EXISTS servers (guild_id TEXT PRIMARY KEY, clips_channel_id TEXT, buffer_size_minutes INTEGER DEFAULT 30, retention_days INTEGER DEFAULT 90, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS clips (id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, timestamp INTEGER NOT NULL, duration INTEGER NOT NULL, users_involved TEXT NOT NULL, created_by TEXT NOT NULL, original_audio_path TEXT NOT NULL, edited_audio_path TEXT, start_trim REAL DEFAULT 0, end_trim REAL, user_mutes TEXT DEFAULT '{}', user_volumes TEXT DEFAULT '{}', created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, favorited INTEGER DEFAULT 0, FOREIGN KEY(guild_id) REFERENCES servers(guild_id));
+CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, user_id TEXT NOT NULL, guild_id TEXT NOT NULL, expires_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS web_sessions (sid TEXT PRIMARY KEY, data TEXT NOT NULL, expires_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS server_admins (guild_id TEXT NOT NULL, user_id TEXT NOT NULL, added_by TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(guild_id, user_id), FOREIGN KEY(guild_id) REFERENCES servers(guild_id));
+CREATE INDEX IF NOT EXISTS idx_server_admins_user ON server_admins(user_id);`);
+if (require.main === module) console.log(`Database initialized at ${dbPath}`);
+module.exports = db;
