@@ -1,18 +1,19 @@
 const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
+const bundledFfmpeg = require('ffmpeg-static');
 const db = require('../api/db');
 const { loadConfig } = require('./utils');
 const config = loadConfig();
 
 function encode(inputs, output, options = {}) {
-  const args = [];
+  const args = ['-y'];
   for (const input of inputs) args.push('-f', 's16le', '-ar', '48000', '-ac', '2', '-i', input);
-  const active = inputs.map((_, i) => `[${i}:a]volume=${options.volumes?.[i] ?? 1}[v${i}]`).join('');
+  const active = inputs.map((_, i) => `[${i}:a]volume=${options.volumes?.[i] ?? 1}[v${i}]`).join(';');
   const mix = inputs.map((_, i) => `[v${i}]`).join('');
   const trim = options.start !== undefined ? `,atrim=start=${options.start}:end=${options.end},asetpts=PTS-STARTPTS` : '';
-  args.push('-filter_complex', `${active}${mix}amix=inputs=${inputs.length}:normalize=0${trim}[a]`, '-map', '[a]', '-c:a', 'libmp3lame', '-q:a', '4', output);
-  return new Promise((resolve, reject) => execFile('ffmpeg', args, error => error ? reject(error) : resolve()));
+  args.push('-filter_complex', `${active};${mix}amix=inputs=${inputs.length}:normalize=0${trim}[a]`, '-map', '[a]', '-c:a', 'libmp3lame', '-q:a', '4', output);
+  return new Promise((resolve, reject) => execFile(process.env.FFMPEG_PATH || bundledFfmpeg || 'ffmpeg', args, error => error ? reject(error) : resolve()));
 }
 async function createClip({ guildId, createdBy, duration, audio, members = [] }) {
   if (!audio.size) throw new Error('No audio has been captured in the requested window.');
