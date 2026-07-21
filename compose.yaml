@@ -9,6 +9,8 @@ services:
       API_HOST: 0.0.0.0
       DATABASE_PATH: /app/data/bot.db
       CLIPS_DIR: /app/data/clips
+      BACKUP_DIR: /app/data/backups
+      BACKUP_RETENTION: 14
     ports:
       - "127.0.0.1:3000:3000"
     volumes:

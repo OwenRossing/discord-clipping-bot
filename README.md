@@ -46,6 +46,8 @@ Any signed-in member of a clip's server can rename an active clip. Clip creators
 
 For a small VPS, copy `.env.example` to `.env`, fill production values, then run `docker compose up -d --build`. The included Compose file runs the API and bot separately against one persistent data volume and binds the API only to localhost for a Cloudflare Tunnel or another HTTPS reverse proxy. Check readiness at `/api/health`. Set `API_BASE_URL`, `WEB_BASE_URL`, and `DISCORD_REDIRECT_URI` to the final HTTPS origin before production startup.
 
+On a Docker deployment, run `docker compose exec -T api npm run cleanup` nightly and `docker compose exec -T api npm run backup-db` daily. Database backups are stored in the persistent data volume and the newest 14 are retained by default. A provider-level Droplet backup is still required because an on-disk backup does not protect against losing the whole VPS.
+
 In production, use HTTPS, disable development login, and set a strong `SESSION_SECRET`. Production sessions use a seven-day `__Host-clipvault.sid` cookie; all state-changing API calls require the session-bound CSRF token and same-origin request metadata. Discord OAuth tokens are used only during sign-in and are not stored. Review the draft Privacy and Terms pages and add an operator identity and support contact before inviting the public.
 
 Run `npm test` for migration, permission, endpoint, recorder-timing, and cleanup regressions. Run `npm run check` for the server-side syntax pass and `npm audit --omit=dev` before a release.
