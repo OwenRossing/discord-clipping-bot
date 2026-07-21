@@ -1,6 +1,7 @@
 const express = require('express');
 const { requireAuth, isPlatformAdmin } = require('../middleware/auth');
 const { loadConfig } = require('../../bot/utils');
+const db = require('../db');
 
 const router = express.Router();
 const config = loadConfig();
@@ -15,6 +16,17 @@ router.get('/:guild/channels', async (req, res, next) => {
     const channels = (await response.json()).filter(channel => channel.type === 0 || channel.type === 5).sort((a, b) => a.position - b.position).map(channel => ({ id: channel.id, name: channel.name }));
     res.json({ channels });
   } catch (error) { if (error.name === 'TimeoutError') return res.status(504).json({ error: 'Discord channel lookup timed out. You can still save the other settings.' }); next(error); }
+});
+
+router.get('/:guild/install-url', (req, res) => {
+  const guildId = req.params.guild;
+  const guild = req.user.guilds?.find(item => item.id === guildId);
+  if (!guild || !req.user.roleAdminGuilds?.includes(guildId)) return res.status(403).json({ error: 'Manage Server permission is required to install Clip Vault.' });
+  if (db.prepare('SELECT 1 FROM servers WHERE guild_id=? AND bot_present=1').get(guildId)) return res.status(409).json({ error: 'Clip Vault is already installed in this server.' });
+  if (!config.discord?.clientId) return res.status(503).json({ error: 'Discord application ID is not configured.' });
+  const permissions = 1024n | 2048n | 16384n | 32768n | 1048576n | 2097152n | 33554432n;
+  const params = new URLSearchParams({ client_id:config.discord.clientId, scope:'bot applications.commands', permissions:String(permissions), guild_id:guildId, disable_guild_select:'true' });
+  res.json({ url:`https://discord.com/oauth2/authorize?${params}` });
 });
 
 module.exports = router;

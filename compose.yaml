@@ -1,0 +1,37 @@
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    command: ["node", "api/server.js"]
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      API_HOST: 0.0.0.0
+      DATABASE_PATH: /app/data/bot.db
+      CLIPS_DIR: /app/data/clips
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - clipvault-data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+  bot:
+    build: .
+    restart: unless-stopped
+    command: ["node", "bot/bot.js"]
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_PATH: /app/data/bot.db
+      CLIPS_DIR: /app/data/clips
+    volumes:
+      - clipvault-data:/app/data
+    depends_on:
+      api:
+        condition: service_healthy
+volumes:
+  clipvault-data:

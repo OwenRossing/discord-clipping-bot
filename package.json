@@ -1,5 +1,5 @@
 {
-  "name": "discord-vc-recorder-bot",
+  "name": "clip-vault",
   "version": "1.0.0",
   "private": true,
   "type": "commonjs",
@@ -8,16 +8,19 @@
     "api": "node api/server.js",
     "init-db": "node api/db.js",
     "serve-web": "node api/server.js",
-    "cleanup": "node scripts/cleanupExpired.js"
+    "cleanup": "node scripts/cleanupExpired.js",
+    "backup-db": "node scripts/backupDatabase.js",
+    "test": "node --test test/*.test.js",
+    "check": "node --check api/server.js && node --check api/routes/clips.js && node --check api/routes/servers.js && node --check bot/bot.js && node --check bot/clipManager.js && node --experimental-vm-modules -e \"const fs=require('fs'),vm=require('vm');new vm.SourceTextModule(fs.readFileSync('web/app.js','utf8'))\""
   },
   "dependencies": {
-    "@discordjs/opus": "^0.9.0",
     "@discordjs/voice": "^0.19.2",
     "better-sqlite3": "^9.2.2",
     "discord.js": "^14.14.1",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
-    "express-session": "^1.18.1"
-    ,"ffmpeg-static": "^5.2.0"
+    "express-session": "^1.18.1",
+    "ffmpeg-static": "^5.2.0",
+    "opusscript": "^0.0.8"
   }
 }

@@ -1,1 +1,44 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Clip Vault</title><link rel="stylesheet" href="styles.css"></head><body><header><a class="brand" href="/"><span>◉</span> Clip Vault</a><nav><a id="adminLink" href="admin.html" hidden>Manage</a><button id="theme" class="quiet">Theme</button><button id="devLogin" class="quiet" hidden>Local dev login</button><a id="login" class="button" href="/api/auth/login">Sign in with Discord</a><button id="logout" class="quiet" hidden>Sign out</button></nav></header><main><section class="hero"><p class="eyebrow">VOICE CHANNEL ARCHIVE</p><h1>Your server’s best moments, ready to replay.</h1><p id="status">Sign in with Discord to browse your clips.</p><div id="guildPicker" hidden><label for="guild">Server</label><select id="guild"></select></div></section><section id="clipPanel" hidden><div class="toolbar"><input id="search" placeholder="Search speakers or dates" aria-label="Filter clips"><span id="count" class="muted"></span></div><section id="clips"></section><button id="more" hidden>Load more</button></section></main><script src="app.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#080b12">
+  <title>Clip Vault</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <section id="welcome" class="welcome" hidden></section>
+  <div id="appShell" class="app-shell" hidden>
+    <aside class="server-rail" aria-label="Discord servers">
+      <a class="vault-mark" href="/" data-route aria-label="Clip Vault home">CV</a>
+      <div id="serverRail" class="server-stack"></div>
+      <button id="openServerPicker" class="rail-button" type="button" aria-label="Switch or add server">+</button>
+    </aside>
+    <section class="workspace">
+      <header class="workspace-header">
+        <button id="mobileServerPicker" class="server-identity" type="button"></button>
+        <nav id="desktopNav" class="primary-nav" aria-label="Server navigation"></nav>
+        <div class="header-actions">
+          <button id="theme" class="icon-control" type="button" aria-label="Change theme">&#9680;</button>
+          <button id="accountButton" class="avatar-button" type="button" aria-label="Account"></button>
+        </div>
+      </header>
+      <main id="view" class="view" tabindex="-1"></main>
+    </section>
+    <section id="player" class="player" hidden aria-label="Now playing">
+      <button id="playerToggle" class="player-play" type="button" aria-label="Play">&#9654;</button>
+      <div class="player-copy"><strong id="playerTitle"></strong><span id="playerServer"></span></div>
+      <input id="playerSeek" type="range" min="0" max="100" value="0" aria-label="Playback position">
+      <span id="playerTime" class="player-time">0:00</span>
+      <button id="playerClose" class="icon-control" type="button" aria-label="Close player">&times;</button>
+      <audio id="persistentAudio" preload="metadata"></audio>
+    </section>
+    <nav id="mobileNav" class="mobile-nav" aria-label="Server navigation"></nav>
+  </div>
+  <dialog id="serverDialog" class="sheet"><div class="sheet-head"><h2>Your servers</h2><button class="icon-control" data-close-dialog type="button" aria-label="Close">&times;</button></div><div id="serverChoices"></div></dialog>
+  <dialog id="accountDialog" class="sheet"><div class="sheet-head"><h2>Account</h2><button class="icon-control" data-close-dialog type="button" aria-label="Close">&times;</button></div><div id="accountContent"></div></dialog>
+  <div id="toastRegion" class="toast-region" aria-live="polite"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
