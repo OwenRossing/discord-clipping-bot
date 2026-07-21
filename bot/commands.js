@@ -25,7 +25,8 @@ const commands = [
   new SlashCommandBuilder().setName('privacy').setDescription('Control whether Clip Vault may include your voice')
     .addSubcommand(command => command.setName('status').setDescription('Show your recording preference in this server'))
     .addSubcommand(command => command.setName('allow').setDescription('Allow your voice to be included in future clips'))
-    .addSubcommand(command => command.setName('block').setDescription('Exclude your voice and clear it from the current buffer'))
+    .addSubcommand(command => command.setName('block').setDescription('Exclude your voice from future clips and clear the current buffer'))
+    .addSubcommand(command => command.setName('remove-past').setDescription('Remove your voice from clips already saved in this server'))
 ].map(command => command.setDMPermission(false).toJSON());
 
 module.exports = commands;

@@ -21,6 +21,10 @@ function renderWaveform(audioPath, output) {
   const args = ['-y', '-i', audioPath, '-filter_complex', 'aformat=channel_layouts=mono,showwavespic=s=1200x180:colors=white', '-frames:v', '1', output];
   return new Promise((resolve, reject) => execFile(process.env.FFMPEG_PATH || bundledFfmpeg || 'ffmpeg', args, error => error ? reject(error) : resolve()));
 }
+function encodeSilence(duration, output) {
+  const args = ['-y', '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-t', String(Math.max(0.1, Number(duration) || 0.1)), '-c:a', 'libmp3lame', '-q:a', '2', output];
+  return new Promise((resolve, reject) => execFile(process.env.FFMPEG_PATH || bundledFfmpeg || 'ffmpeg', args, error => error ? reject(error) : resolve()));
+}
 async function createClip({ guildId, createdBy, duration, audio, members = [], title }) {
   if (!audio.size) throw new Error('No audio has been captured in the requested window.');
   const timestamp = Date.now(), id = `${timestamp}`;
@@ -49,10 +53,13 @@ async function createClip({ guildId, createdBy, duration, audio, members = [], t
         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, '{}', '{}', ?, ?, 0, ?)`)
         .run(id, guildId, timestamp, duration, JSON.stringify(users), createdBy, dir, duration, timestamp, expiresAt, metadata.title);
       const revision = db.prepare(`INSERT INTO clip_revisions
-        (clip_id, revision_number, start_trim, end_trim, user_mutes, user_volumes, audio_path, waveform_path, created_by, created_at)
-        VALUES (?, 0, 0, ?, '{}', '{}', ?, ?, ?, ?)`)
+        (clip_id, revision_number, start_trim, end_trim, user_mutes, user_volumes, audio_path, waveform_path, created_by, created_at, participant_version)
+        VALUES (?, 0, 0, ?, '{}', '{}', ?, ?, ?, ?, 0)`)
         .run(id, duration, output, fs.existsSync(waveform) ? waveform : null, createdBy, timestamp);
       db.prepare('UPDATE clips SET current_revision_id=? WHERE id=?').run(Number(revision.lastInsertRowid), id);
+      const addParticipant = db.prepare(`INSERT INTO clip_participants(clip_id,user_id,display_name,included,removed_at,updated_at)
+        VALUES(?,?,?,1,NULL,?)`);
+      for (const speaker of users) addParticipant.run(id, speaker.id, speaker.name, timestamp);
     })();
     const storageBytes = refreshClipStorage(id, dir);
     return { ...metadata, audioPath: output, storageBytes };
@@ -62,4 +69,4 @@ async function createClip({ guildId, createdBy, duration, audio, members = [], t
     throw error;
   }
 }
-module.exports = { createClip, encode, renderWaveform };
+module.exports = { createClip, encode, encodeSilence, renderWaveform };

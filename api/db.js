@@ -202,7 +202,41 @@ function publicBetaSchema(database) {
   }
 }
 
-const migrations = [createBaseSchema, expandClipSchema, personalizeServerSchema, publicBetaSchema];
+function participantPrivacySchema(database) {
+  addColumn(database, 'clips', 'participant_version INTEGER NOT NULL DEFAULT 0');
+  addColumn(database, 'clips', 'privacy_rendering INTEGER NOT NULL DEFAULT 0');
+  addColumn(database, 'clips', 'discord_channel_id TEXT');
+  addColumn(database, 'clips', 'discord_message_id TEXT');
+  addColumn(database, 'clips', 'discord_sync_pending INTEGER NOT NULL DEFAULT 0');
+  addColumn(database, 'clips', 'source_clip_id TEXT');
+  addColumn(database, 'clips', 'participant_clone_user_id TEXT');
+  addColumn(database, 'clip_revisions', 'participant_version INTEGER NOT NULL DEFAULT 0');
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS clip_participants (
+      clip_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      included INTEGER NOT NULL DEFAULT 1,
+      removed_at INTEGER,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY(clip_id, user_id),
+      FOREIGN KEY(clip_id) REFERENCES clips(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_clip_participants_user ON clip_participants(user_id, included, clip_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_active_participant_clone
+      ON clips(source_clip_id, participant_clone_user_id)
+      WHERE source_clip_id IS NOT NULL AND participant_clone_user_id IS NOT NULL AND deleted_at IS NULL;
+  `);
+  const insert = database.prepare(`INSERT OR IGNORE INTO clip_participants
+    (clip_id,user_id,display_name,included,removed_at,updated_at) VALUES(?,?,?,1,NULL,?)`);
+  for (const clip of database.prepare('SELECT id,users_involved,created_at FROM clips').all()) {
+    let users = [];
+    try { users = JSON.parse(clip.users_involved || '[]'); } catch {}
+    for (const user of users) if (user?.id) insert.run(clip.id, String(user.id), String(user.name || user.id), clip.created_at || Date.now());
+  }
+}
+
+const migrations = [createBaseSchema, expandClipSchema, personalizeServerSchema, publicBetaSchema, participantPrivacySchema];
 
 function initializeDatabase(database) {
   database.pragma('foreign_keys = ON');

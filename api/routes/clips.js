@@ -8,6 +8,7 @@ const { encode, renderWaveform } = require('../../bot/clipManager');
 const { loadConfig } = require('../../bot/utils');
 const { runAudioJob, checkPreviewRate } = require('../audioJobs');
 const { assertQuota, refreshClipStorage } = require('../storage');
+const { cloneWithParticipant, participant, participants, removeParticipant, revisionReady } = require('../../bot/participation');
 
 const router = express.Router();
 const config = loadConfig();
@@ -42,20 +43,33 @@ function currentRevision(clip) {
     : null;
 }
 
+function includedUsers(clipId) {
+  return participants(clipId, true).map(row => ({ id:row.user_id, name:row.display_name }));
+}
+
+function publicMix(clipId, value) {
+  const allowed = new Set(includedUsers(clipId).map(user => user.id));
+  return Object.fromEntries(Object.entries(json(value, {})).filter(([userId]) => allowed.has(userId)));
+}
+
 function serializeClip(req, clip) {
   const revision = currentRevision(clip);
+  const speakers = includedUsers(clip.id);
+  const self = participant(clip.id, req.user.userId);
+  const revisionMutes = json(revision?.user_mutes, {});
+  const active = !clip.deleted_at;
   return {
     id: clip.id,
     guild_id: clip.guild_id,
     title: clip.title,
     timestamp: clip.timestamp,
     duration: clip.duration,
-    users_involved: json(clip.users_involved, []),
+    users_involved: speakers,
     created_by: clip.created_by,
     start_trim: clip.start_trim,
     end_trim: clip.end_trim,
-    user_mutes: json(clip.user_mutes, {}),
-    user_volumes: json(clip.user_volumes, {}),
+    user_mutes: publicMix(clip.id, clip.user_mutes),
+    user_volumes: publicMix(clip.id, clip.user_volumes),
     created_at: clip.created_at,
     expires_at: clip.expires_at,
     favorited: Boolean(clip.favorited),
@@ -65,6 +79,15 @@ function serializeClip(req, clip) {
     purge_at: clip.purge_at,
     deletion_reason: clip.deletion_reason,
     storage_bytes: Number(clip.storage_bytes || 0),
+    privacy_rendering: Boolean(clip.privacy_rendering),
+    source_clip_id: clip.source_clip_id || null,
+    my_participation: {
+      source_present: Boolean(self),
+      included: Boolean(self?.included),
+      audible: Boolean(self?.included && !revisionMutes[req.user.userId]),
+      can_remove: Boolean(active && self?.included),
+      can_clone: Boolean(active && self && (!self.included || revisionMutes[req.user.userId]))
+    },
     current_revision: revision ? serializeRevision(clip, revision) : null,
     audio_url: revision ? `/api/clips/${clip.id}/audio?revision=${revision.id}` : `/api/clips/${clip.id}/audio`,
     capabilities: clipCapabilities(req, clip)
@@ -78,8 +101,8 @@ function serializeRevision(clip, revision) {
     revision_number: revision.revision_number,
     start_trim: revision.start_trim,
     end_trim: revision.end_trim,
-    user_mutes: json(revision.user_mutes, {}),
-    user_volumes: json(revision.user_volumes, {}),
+    user_mutes: publicMix(clip.id, revision.user_mutes),
+    user_volumes: publicMix(clip.id, revision.user_volumes),
     created_by: revision.created_by,
     created_at: revision.created_at,
     audio_url: `/api/clips/${clip.id}/revisions/${revision.id}/audio`,
@@ -137,7 +160,10 @@ function validateEdit(clip, body) {
     error.status = 400;
     throw error;
   }
-  const knownUsers = json(clip.users_involved, []);
+  const savedParticipants = clip.id ? participants(clip.id) : [];
+  const knownUsers = savedParticipants.length
+    ? savedParticipants.filter(user => user.included).map(user => ({ id:user.user_id, name:user.display_name }))
+    : json(clip.users_involved, []);
   const userMutes = body.user_mutes && typeof body.user_mutes === 'object' ? body.user_mutes : {};
   const requestedVolumes = body.user_volumes && typeof body.user_volumes === 'object' ? body.user_volumes : {};
   const userVolumes = {};
@@ -183,12 +209,12 @@ router.get('/', (req, res) => {
   const params = [guildId];
   if (req.query.q) {
     const query = `%${String(req.query.q).slice(0, 80)}%`;
-    clauses.push('(title LIKE ? OR users_involved LIKE ?)');
+    clauses.push('(title LIKE ? OR EXISTS (SELECT 1 FROM clip_participants cp WHERE cp.clip_id=clips.id AND cp.included=1 AND cp.display_name LIKE ?))');
     params.push(query, query);
   }
   if (req.query.title) { clauses.push('title LIKE ?'); params.push(`%${String(req.query.title).slice(0, 80)}%`); }
   if (req.query.creator) { clauses.push('created_by=?'); params.push(String(req.query.creator)); }
-  if (req.query.speaker) { clauses.push('users_involved LIKE ?'); params.push(`%${String(req.query.speaker).slice(0, 80)}%`); }
+  if (req.query.speaker) { clauses.push('EXISTS (SELECT 1 FROM clip_participants cp WHERE cp.clip_id=clips.id AND cp.included=1 AND cp.display_name LIKE ?)'); params.push(`%${String(req.query.speaker).slice(0, 80)}%`); }
   if (req.query.favorite === '1') clauses.push('favorited=1');
   if (Number(req.query.after)) { clauses.push('created_at>=?'); params.push(Number(req.query.after)); }
   if (Number(req.query.before)) { clauses.push('created_at<=?'); params.push(Number(req.query.before)); }
@@ -233,6 +259,7 @@ router.get('/:id/audio', (req, res, next) => {
   const clip = memberClip(req, res, { allowDeleted: true });
   if (!clip || !requireCapability(req, res, clip, 'canPlay', 'This clip is unavailable.')) return;
   const revision = currentRevision(clip);
+  if (!revisionReady(clip, revision)) return res.status(423).json({ error:'This clip is applying a voice privacy change. Try again shortly.', code:'PRIVACY_RENDERING' });
   const file = revision?.audio_path || clip.edited_audio_path || path.join(clip.original_audio_path, 'original.mp3');
   if (!inside(clip.original_audio_path, file)) return res.status(500).json({ error: 'Audio path failed a safety check.' });
   res.set('Cache-Control', 'private, no-store');
@@ -281,6 +308,7 @@ async function createRevision(req, res, compatibility = false) {
     });
   }
   const state = validateEdit(clip, req.body);
+  state.participantVersion = Number(clip.participant_version || 0);
   assertQuota(clip.guild_id, Math.ceil((state.end - state.start) * 32000));
   const nextNumber = db.prepare('SELECT COALESCE(MAX(revision_number), -1) + 1 number FROM clip_revisions WHERE clip_id=?').get(clip.id).number;
   const output = path.join(clip.original_audio_path, 'revisions', `revision-${nextNumber}-${crypto.randomUUID()}.mp3`);
@@ -292,16 +320,16 @@ async function createRevision(req, res, compatibility = false) {
     });
     const revisionId = db.transaction(() => {
       const fresh = getClip(clip.id);
-      if (Number(fresh.current_revision_id) !== baseRevisionId) {
+      if (Number(fresh.current_revision_id) !== baseRevisionId || Number(fresh.participant_version || 0) !== state.participantVersion || fresh.privacy_rendering) {
         const conflict = new Error('This clip changed while the revision was rendering. Reload before saving again.');
         conflict.status = 409;
         conflict.code = 'STALE_REVISION';
         throw conflict;
       }
       const result = db.prepare(`INSERT INTO clip_revisions
-        (clip_id, revision_number, start_trim, end_trim, user_mutes, user_volumes, audio_path, waveform_path, created_by, created_at)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-          clip.id, nextNumber, state.start, state.end, JSON.stringify(state.userMutes), JSON.stringify(state.userVolumes), output, fs.existsSync(waveform) ? waveform : null, req.user.userId, Date.now()
+        (clip_id, revision_number, start_trim, end_trim, user_mutes, user_volumes, audio_path, waveform_path, created_by, created_at, participant_version)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+          clip.id, nextNumber, state.start, state.end, JSON.stringify(state.userMutes), JSON.stringify(state.userVolumes), output, fs.existsSync(waveform) ? waveform : null, req.user.userId, Date.now(), state.participantVersion
         );
       const id = Number(result.lastInsertRowid);
       db.prepare(`UPDATE clips SET current_revision_id=?, edited_audio_path=?, start_trim=?, end_trim=?, user_mutes=?, user_volumes=? WHERE id=?`)
@@ -338,6 +366,7 @@ router.get('/:id/revisions/:revisionId/audio', (req, res, next) => {
   if (!clip || !requireCapability(req, res, clip, 'canViewRevisions', 'Only bot admins can play revision history.')) return;
   const revision = db.prepare('SELECT * FROM clip_revisions WHERE id=? AND clip_id=?').get(Number(req.params.revisionId), clip.id);
   if (!revision || !inside(clip.original_audio_path, revision.audio_path)) return res.status(404).end();
+  if (!revisionReady(clip, revision)) return res.status(423).json({ error:'This revision is unavailable while voice privacy is updating.', code:'PRIVACY_RENDERING' });
   res.set('Cache-Control', 'private, no-store');
   res.sendFile(path.resolve(revision.audio_path), error => { if (error && !res.headersSent) next(error); });
 });
@@ -347,6 +376,7 @@ router.get('/:id/revisions/:revisionId/waveform', asyncRoute(async (req, res, ne
   if (!clip) return;
   const revision = db.prepare('SELECT * FROM clip_revisions WHERE id=? AND clip_id=?').get(Number(req.params.revisionId), clip.id);
   if (!revision) return res.status(404).end();
+  if (!revisionReady(clip, revision)) return res.status(423).json({ error:'This waveform is unavailable while voice privacy is updating.', code:'PRIVACY_RENDERING' });
   const capabilities = clipCapabilities(req, clip);
   if (Number(clip.current_revision_id) !== Number(revision.id) && !capabilities.canViewRevisions) return res.status(403).json({ error: 'Revision history is limited to bot admins.' });
   if (!capabilities.canPlay) return res.status(403).json({ error: 'This waveform is unavailable.' });
@@ -367,6 +397,7 @@ router.post('/:id/revisions/:revisionId/restore', (req, res) => {
   if (!clip || !requireCapability(req, res, clip, 'canRollback', 'Only bot admins can restore revisions.')) return;
   const revision = db.prepare('SELECT * FROM clip_revisions WHERE id=? AND clip_id=?').get(Number(req.params.revisionId), clip.id);
   if (!revision) return res.status(404).json({ error: 'Revision not found.' });
+  if (!revisionReady(clip, revision)) return res.status(409).json({ error:'That revision predates the latest voice privacy change and cannot be restored yet.', code:'PRIVACY_REVISION_STALE' });
   db.transaction(() => {
     db.prepare(`UPDATE clips SET current_revision_id=?, edited_audio_path=?, start_trim=?, end_trim=?, user_mutes=?, user_volumes=? WHERE id=?`)
       .run(revision.id, revision.audio_path, revision.start_trim, revision.end_trim, revision.user_mutes, revision.user_volumes, clip.id);
@@ -374,6 +405,22 @@ router.post('/:id/revisions/:revisionId/restore', (req, res) => {
   })();
   res.json(serializeClip(req, getClip(clip.id)));
 });
+
+router.post('/:id/participants/me/remove', asyncRoute(async (req, res) => {
+  const clip = memberClip(req, res);
+  if (!clip) return;
+  const source = participant(clip.id, req.user.userId);
+  if (!source) return res.status(404).json({ error:'No saved voice track for you exists in this clip.' });
+  await removeParticipant(clip.id, req.user.userId);
+  res.json(serializeClip(req, getClip(clip.id)));
+}));
+
+router.post('/:id/participants/me/clone', asyncRoute(async (req, res) => {
+  const clip = memberClip(req, res);
+  if (!clip) return;
+  const result = await cloneWithParticipant(clip.id, req.user.userId, req.user.username || req.user.userId);
+  res.status(result.existing ? 200 : 201).json({ existing:result.existing, clip:serializeClip(req, result.clip) });
+}));
 
 router.post('/:id/favorite', (req, res) => {
   const clip = memberClip(req, res);

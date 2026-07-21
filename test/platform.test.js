@@ -29,10 +29,10 @@ test.after(() => { db.close(); fs.rmSync(testRoot, { recursive: true, force: tru
 
 test('empty database migrates to the latest schema', () => {
   const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => row.name));
-  for (const name of ['clips', 'clip_revisions', 'clip_activity', 'clip_previews', 'server_runtime', 'recording_preferences', 'schema_migrations']) assert.ok(tables.has(name));
+  for (const name of ['clips', 'clip_revisions', 'clip_activity', 'clip_previews', 'clip_participants', 'server_runtime', 'recording_preferences', 'schema_migrations']) assert.ok(tables.has(name));
   assert.equal(db.prepare('SELECT MAX(version) version FROM schema_migrations').get().version, schemaVersion);
   const columns = new Set(db.prepare('PRAGMA table_info(clips)').all().map(row => row.name));
-  for (const name of ['title', 'current_revision_id', 'deleted_at', 'deleted_by', 'purge_at', 'deletion_reason', 'storage_bytes']) assert.ok(columns.has(name));
+  for (const name of ['title', 'current_revision_id', 'deleted_at', 'deleted_by', 'purge_at', 'deletion_reason', 'storage_bytes', 'participant_version', 'privacy_rendering', 'source_clip_id', 'participant_clone_user_id']) assert.ok(columns.has(name));
   const serverColumns = new Set(db.prepare('PRAGMA table_info(servers)').all().map(row => row.name));
   for (const name of ['name', 'icon_hash', 'owner_id', 'bot_present', 'profile_updated_at', 'consent_mode', 'storage_quota_bytes', 'onboarding_completed_at']) assert.ok(serverColumns.has(name));
   assert.ok(db.prepare('PRAGMA table_info(clip_revisions)').all().some(row => row.name === 'waveform_path'));
@@ -44,7 +44,7 @@ test('legacy clips backfill original and edited revisions', () => {
     CREATE TABLE clips (id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, timestamp INTEGER NOT NULL, duration INTEGER NOT NULL, users_involved TEXT NOT NULL, created_by TEXT NOT NULL, original_audio_path TEXT NOT NULL, edited_audio_path TEXT, start_trim REAL DEFAULT 0, end_trim REAL, user_mutes TEXT DEFAULT '{}', user_volumes TEXT DEFAULT '{}', created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, favorited INTEGER DEFAULT 0);
     INSERT INTO servers(guild_id, created_at) VALUES('guild', 1);`);
   const insert = legacy.prepare('INSERT INTO clips(id,guild_id,timestamp,duration,users_involved,created_by,original_audio_path,edited_audio_path,start_trim,end_trim,user_mutes,user_volumes,created_at,expires_at,favorited) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
-  insert.run('original', 'guild', 10, 8, '[]', 'owner', path.join(testRoot, 'original'), null, 0, 8, '{}', '{}', 10, 100, 0);
+  insert.run('original', 'guild', 10, 8, JSON.stringify([{ id:'speaker', name:'Speaker' }]), 'owner', path.join(testRoot, 'original'), null, 0, 8, '{}', '{}', 10, 100, 0);
   insert.run('edited', 'guild', 11, 8, '[]', 'owner', path.join(testRoot, 'edited'), path.join(testRoot, 'edited', 'edited.mp3'), 1, 6, '{}', '{}', 11, 100, 0);
   initializeDatabase(legacy);
   assert.equal(legacy.prepare("SELECT COUNT(*) count FROM clip_revisions WHERE clip_id='original'").get().count, 1);
@@ -52,6 +52,7 @@ test('legacy clips backfill original and edited revisions', () => {
   const edited = legacy.prepare("SELECT * FROM clips WHERE id='edited'").get();
   assert.equal(edited.title, 'Clip edited');
   assert.equal(legacy.prepare('SELECT revision_number FROM clip_revisions WHERE id=?').get(edited.current_revision_id).revision_number, 1);
+  assert.deepEqual(legacy.prepare("SELECT user_id,display_name,included FROM clip_participants WHERE clip_id='original'").get(), { user_id:'speaker', display_name:'Speaker', included:1 });
   legacy.close();
 });
 
@@ -141,6 +142,7 @@ test('Discord command registration exposes primary commands and one-release alia
   for (const name of ['record', 'clipthat', 'clip', 'clips', 'settings', 'privacy']) assert.ok(byName.has(name));
   assert.deepEqual(byName.get('record').options.map(option => option.name), ['start', 'stop', 'status', 'join', 'leave']);
   assert.deepEqual(byName.get('clips').options.map(option => option.name), ['recent', 'list', 'open', 'edit']);
+  assert.deepEqual(byName.get('privacy').options.map(option => option.name), ['status', 'allow', 'block', 'remove-past']);
   const open = byName.get('clips').options.find(option => option.name === 'open');
   assert.equal(open.options[0].autocomplete, true);
 });
@@ -236,6 +238,44 @@ test('preview is non-persistent and revision saves are immutable with stale-save
     assert.equal(stale.status, 409);
     assert.equal((await stale.json()).current_revision.id, saved.revision.id);
   } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('self-removal rewrites every revision and add-me creates one personal cut without changing the original', async () => {
+  const { createClip } = require('../bot/clipManager');
+  const { cloneWithParticipant, removeParticipant, revisionReady } = require('../bot/participation');
+  const tone = frequency => {
+    const pcm = Buffer.alloc(48_000 * 4);
+    for (let frame = 0; frame < 48_000; frame += 1) {
+      const sample = Math.round(Math.sin(frame * frequency / 48_000 * Math.PI * 2) * 10_000);
+      pcm.writeInt16LE(sample, frame * 4); pcm.writeInt16LE(sample, frame * 4 + 2);
+    }
+    return pcm;
+  };
+  const created = await createClip({
+    guildId:'guild', createdBy:'creator', duration:1,
+    audio:new Map([['speaker-one', tone(440)], ['speaker-two', tone(660)]]),
+    members:[{ id:'speaker-one', displayName:'One' }, { id:'speaker-two', displayName:'Two' }], title:'Shared moment'
+  });
+  const before = db.prepare('SELECT * FROM clip_revisions WHERE clip_id=?').all(created.clip_id);
+  const removal = await removeParticipant(created.clip_id, 'speaker-one');
+  assert.equal(removal.changed, true);
+  const source = db.prepare('SELECT * FROM clips WHERE id=?').get(created.clip_id);
+  const after = db.prepare('SELECT * FROM clip_revisions WHERE clip_id=? ORDER BY revision_number').all(created.clip_id);
+  assert.equal(source.privacy_rendering, 0);
+  assert.equal(db.prepare('SELECT included FROM clip_participants WHERE clip_id=? AND user_id=?').get(created.clip_id, 'speaker-one').included, 0);
+  assert.ok(after.every(revision => revisionReady(source, revision)));
+  assert.ok(after.every((revision, index) => revision.audio_path !== before[index].audio_path && fs.existsSync(revision.audio_path)));
+  assert.ok(before.every(revision => !fs.existsSync(revision.audio_path)));
+
+  const firstCut = await cloneWithParticipant(created.clip_id, 'speaker-one', 'One');
+  assert.equal(firstCut.existing, false);
+  assert.equal(firstCut.clip.created_by, 'speaker-one');
+  assert.equal(firstCut.clip.source_clip_id, created.clip_id);
+  assert.equal(db.prepare('SELECT included FROM clip_participants WHERE clip_id=? AND user_id=?').get(created.clip_id, 'speaker-one').included, 0);
+  assert.equal(db.prepare('SELECT included FROM clip_participants WHERE clip_id=? AND user_id=?').get(firstCut.clip.id, 'speaker-one').included, 1);
+  const secondCut = await cloneWithParticipant(created.clip_id, 'speaker-one', 'One');
+  assert.equal(secondCut.existing, true);
+  assert.equal(secondCut.clip.id, firstCut.clip.id);
 });
 
 test('manage settings complete onboarding and the owner can export then erase server data', async () => {

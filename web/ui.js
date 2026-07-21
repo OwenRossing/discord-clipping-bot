@@ -16,6 +16,8 @@ export function clipCard(clip) {
     <div class="clip-card-copy"><div class="clip-title-row"><h3>${escapeHtml(clip.title)}</h3>${clip.capabilities?.canRename ? `<button class="text-action" data-action="rename" type="button">Rename</button>` : ''}</div><p>${escapeHtml(speakers)} &middot; ${formatDuration(clip.duration)} &middot; ${escapeHtml(relativeTime(clip.created_at))}</p></div>
     <div class="clip-menu">
       <a class="button secondary" href="/clips/${encodeURIComponent(clip.id)}" data-route>${clip.capabilities?.canEditAudio ? 'Edit' : 'Open'}</a>
+      ${clip.my_participation?.can_remove ? '<button class="button secondary" data-action="remove-self" type="button">Remove me</button>' : ''}
+      ${clip.my_participation?.can_clone ? '<button class="button secondary" data-action="clone-self" type="button">Add me (new cut)</button>' : ''}
       ${clip.capabilities?.canFavorite ? `<button class="icon-control ${clip.favorited ? 'selected' : ''}" data-action="favorite" type="button" aria-label="${clip.favorited ? 'Remove favorite' : 'Favorite'}">${clip.favorited ? '&#9733;' : '&#9734;'}</button>` : ''}
       ${clip.capabilities?.canDelete ? '<button class="icon-control danger-icon" data-action="trash" type="button" aria-label="Move to trash">&#9003;</button>' : ''}
       ${clip.capabilities?.canRestore ? '<button class="button" data-action="restore" type="button">Restore</button>' : ''}

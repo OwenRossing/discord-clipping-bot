@@ -30,7 +30,7 @@ npm.cmd run api
 
 For real Discord login, register the exact callback URL shown by `discord.redirectUri` in the Discord Developer Portal. For local testing that is normally `http://localhost:3000/api/auth/discord/callback`; the scheme, host, port, and path must match exactly.
 
-Use `/record start` in a voice channel, then `/clipthat` or `/clipthat duration:2m title:Great round`. `/record stop` stops and clears the RAM buffer, and `/record status` reports recorder health. `/privacy` lets every member allow or block capture of their voice. `/clips recent` shows titled moments with open buttons; `/clips open` has server-scoped title autocomplete. The old join/leave, `/clip`, list, and edit forms remain as one-release compatibility aliases.
+Use `/record start` in a voice channel, then `/clipthat` or `/clipthat duration:2m title:Great round`. `/record stop` stops and clears the RAM buffer, and `/record status` reports recorder health. `/privacy allow` and `/privacy block` control future capture; `/privacy remove-past` confirms and removes the member from already-saved clips. Every posted clip also has **Remove my voice** and **Add me (new cut)** buttons. Adding yourself creates a personal copy without changing the original. `/clips recent` shows titled moments with open buttons; `/clips open` has server-scoped title autocomplete. The old join/leave, `/clip`, list, and edit forms remain as one-release compatibility aliases.
 
 The signed-in app is a no-reload server library with a desktop server rail, mobile server switcher and bottom navigation, persistent playback, recents, favorites, search, cursor pagination, trash, and an integrated waveform editor. Old `editor.html?clip_id=` and `admin.html?guild=` links redirect into the new shell.
 

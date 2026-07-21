@@ -12,6 +12,7 @@ const commands = require('./commands');
 const { isBotAdmin } = require('./access');
 const { consentMode, isRecordingAllowed, recordingPreference, setRecordingPreference } = require('./consent');
 const { createClip } = require('./clipManager');
+const { affectedClips, cloneWithParticipant, currentRevision, participant, participants, removeParticipant, revisionReady } = require('./participation');
 const { reconcileGuilds, markGuildRemoved, setRuntime, syncGuild } = require('./runtimeStore');
 const { loadConfig, log, parseDuration, formatDuration } = require('./utils');
 
@@ -28,6 +29,50 @@ function getServerSettings(guildId) {
   return db.prepare('SELECT * FROM servers WHERE guild_id=?').get(guildId);
 }
 
+function clipButtons(clipId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`play:${clipId}`).setLabel('Play in voice').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setURL(dashboardUrl(`/clips/${clipId}`)).setLabel('Open Clip Vault').setStyle(ButtonStyle.Link),
+    new ButtonBuilder().setCustomId(`clip-remove:${clipId}`).setLabel('Remove my voice').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(`clip-clone:${clipId}`).setLabel('Add me (new cut)').setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function clipEmbed(clip) {
+  const speakers = participants(clip.id, true);
+  return new EmbedBuilder()
+    .setTitle(`Voice clip: ${clip.title}`)
+    .setDescription(`**${formatDuration((clip.end_trim || clip.duration) - (clip.start_trim || 0))}** - created by <@${clip.created_by}>\n${speakers.length ? speakers.map(speaker => speaker.display_name).join(', ') : 'No voices currently included'}`)
+    .setColor(0x7c8cff)
+    .setTimestamp(clip.created_at || Date.now());
+}
+
+async function postClipMessage(destination, clipInfo) {
+  const clip = db.prepare('SELECT * FROM clips WHERE id=?').get(clipInfo.clip_id || clipInfo.id);
+  const revision = currentRevision(clip);
+  const message = await destination.send({ embeds:[clipEmbed(clip)], files:[{ attachment:revision.audio_path, name:`clip-${clip.id}.mp3` }], components:[clipButtons(clip.id)] });
+  db.prepare('UPDATE clips SET discord_channel_id=?,discord_message_id=?,discord_sync_pending=0 WHERE id=?').run(message.channelId, message.id, clip.id);
+  return message;
+}
+
+async function syncClipMessage(clipId) {
+  const clip = db.prepare('SELECT * FROM clips WHERE id=?').get(clipId);
+  if (!clip?.discord_channel_id || !clip.discord_message_id) return;
+  const channel = await client.channels.fetch(clip.discord_channel_id).catch(() => null);
+  const message = await channel?.messages?.fetch(clip.discord_message_id).catch(() => null);
+  if (!message) {
+    db.prepare('UPDATE clips SET discord_channel_id=NULL,discord_message_id=NULL,discord_sync_pending=0 WHERE id=?').run(clip.id);
+    return;
+  }
+  const revision = currentRevision(clip);
+  if (!revisionReady(clip, revision)) {
+    await message.edit({ attachments:[] });
+    return;
+  }
+  await message.edit({ embeds:[clipEmbed(clip)], components:[clipButtons(clip.id)], attachments:[], files:[{ attachment:revision.audio_path, name:`clip-${clip.id}.mp3` }] });
+  db.prepare('UPDATE clips SET discord_sync_pending=0 WHERE id=?').run(clip.id);
+}
+
 async function recordClip({ guild, guildId, user, channel, duration, title }) {
   const state = active.get(guildId);
   if (!state) throw new Error('Recording is not active. Ask a bot admin to use `/record start`.');
@@ -36,16 +81,7 @@ async function recordClip({ guild, guildId, user, channel, duration, title }) {
   const destination = guild.channels.cache.get(settings.clips_channel_id)
     || guild.channels.cache.find(candidate => candidate.name === config.bot.defaultClipsChannel)
     || channel;
-  const embed = new EmbedBuilder()
-    .setTitle(`🎤 ${clip.title}`)
-    .setDescription(`**${formatDuration(duration)}** · created by <@${user.id}>\n${clip.users_involved.map(speaker => speaker.name).join(', ')}`)
-    .setColor(0x7c8cff)
-    .setTimestamp();
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`play:${clip.clip_id}`).setLabel('Play in voice').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setURL(dashboardUrl(`/clips/${clip.clip_id}`)).setLabel('Open Clip Vault').setStyle(ButtonStyle.Link)
-  );
-  await destination.send({ embeds:[embed], files:[clip.audioPath], components:[row] });
+  await postClipMessage(destination, clip);
   return clip;
 }
 
@@ -85,7 +121,7 @@ function updatePrivacy(interaction, allowed) {
   if (!allowed) active.get(interaction.guildId)?.recorder.exclude(interaction.user.id);
   return interaction.reply({ content:allowed
     ? 'Your voice may be included in future clips from this server. You can change this at any time with `/privacy block`.'
-    : 'Your voice is excluded. Any audio currently held for you in the rolling memory buffer was cleared.', ephemeral:true });
+    : 'Your voice is excluded from future clips, and any audio currently held for you in the rolling memory buffer was cleared. Existing saved clips are unchanged; use `/privacy remove-past` when you want to update those too.', ephemeral:true });
 }
 
 function privacyStatus(interaction) {
@@ -136,14 +172,69 @@ async function playInVoice(interaction) {
   const state = active.get(interaction.guildId);
   if (!state) return interaction.reply({ content:'The bot is not connected to voice.', ephemeral:true });
   const clipId = interaction.customId.split(':')[1];
-  const clip = db.prepare('SELECT edited_audio_path,original_audio_path FROM clips WHERE id=? AND guild_id=? AND deleted_at IS NULL').get(clipId, interaction.guildId);
+  const clip = db.prepare('SELECT * FROM clips WHERE id=? AND guild_id=? AND deleted_at IS NULL').get(clipId, interaction.guildId);
   if (!clip) return interaction.reply({ content:'This clip is no longer available.', ephemeral:true });
+  const revision = currentRevision(clip);
+  if (!revisionReady(clip, revision)) return interaction.reply({ content:'This clip is applying a voice privacy change. Try again shortly.', ephemeral:true });
   const player = createAudioPlayer();
   const subscription = state.connection.subscribe(player);
   state.connection.rejoin({ selfMute:false });
-  player.play(createAudioResource(clip.edited_audio_path || `${clip.original_audio_path}/original.mp3`));
+  player.play(createAudioResource(revision.audio_path));
   player.once(AudioPlayerStatus.Idle, () => { subscription.unsubscribe(); state.connection.rejoin({ selfMute:true }); });
   return interaction.reply({ content:'Playing the clip in voice.', ephemeral:true });
+}
+
+async function removeVoice(interaction) {
+  const clipId = interaction.customId.split(':')[1];
+  const clip = db.prepare('SELECT * FROM clips WHERE id=? AND guild_id=? AND deleted_at IS NULL').get(clipId, interaction.guildId);
+  if (!clip) return interaction.reply({ content:'This clip is no longer available.', ephemeral:true });
+  const self = participant(clip.id, interaction.user.id);
+  if (!self) return interaction.reply({ content:'No saved voice track for you exists in this clip.', ephemeral:true });
+  if (!self.included) return interaction.reply({ content:'Your voice is already removed from this clip.', ephemeral:true });
+  await interaction.deferReply({ ephemeral:true });
+  await interaction.message?.edit({ attachments:[] }).catch(() => {});
+  const result = await removeParticipant(clip.id, interaction.user.id);
+  await syncClipMessage(clip.id).catch(error => log(`Discord clip sync failed for ${clip.id}: ${error.message}`));
+  return interaction.editReply(result.changed
+    ? 'Your voice was removed from every playable revision of this clip. The posted audio was replaced. Copies someone already downloaded cannot be recalled. You can make a separate personal cut later without changing this one.'
+    : 'Your voice is already removed from this clip.');
+}
+
+async function cloneVoice(interaction) {
+  const clipId = interaction.customId.split(':')[1];
+  const source = db.prepare('SELECT * FROM clips WHERE id=? AND guild_id=? AND deleted_at IS NULL').get(clipId, interaction.guildId);
+  if (!source) return interaction.reply({ content:'This clip is no longer available.', ephemeral:true });
+  await interaction.deferReply({ ephemeral:true });
+  const result = await cloneWithParticipant(clipId, interaction.user.id, interaction.member?.displayName || interaction.user.username);
+  if (!result.clip.discord_message_id) await postClipMessage(interaction.channel, { clip_id:result.clip.id });
+  return interaction.editReply(`${result.existing ? 'Your existing' : 'Created a'} personal cut: [open **${result.clip.title}**](${dashboardUrl(`/clips/${result.clip.id}`)}). The original clip was not changed.`);
+}
+
+async function requestPastRemoval(interaction) {
+  const count = affectedClips(interaction.guildId, interaction.user.id, true).length;
+  if (!count) return interaction.reply({ content:'Your voice is not included in any active clips in this server.', ephemeral:true });
+  const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`privacy-remove-past:${interaction.user.id}`).setLabel(`Remove me from ${count} clip${count === 1 ? '' : 's'}`).setStyle(ButtonStyle.Danger));
+  return interaction.reply({ content:`This removes your voice from **${count} existing clip${count === 1 ? '' : 's'}** and replaces their posted audio. It does not change your future recording preference. Personal cuts can be created later without altering those originals.`, components:[row], ephemeral:true });
+}
+
+async function confirmPastRemoval(interaction) {
+  const ownerId = interaction.customId.split(':')[1];
+  if (ownerId !== interaction.user.id) return interaction.reply({ content:'Only the person who requested this removal can confirm it.', ephemeral:true });
+  await interaction.deferUpdate();
+  const clips = affectedClips(interaction.guildId, interaction.user.id, true).slice(0, 20);
+  let removed = 0;
+  for (const clip of clips) {
+    if (clip.discord_channel_id && clip.discord_message_id) {
+      const channel = await client.channels.fetch(clip.discord_channel_id).catch(() => null);
+      const message = await channel?.messages?.fetch(clip.discord_message_id).catch(() => null);
+      await message?.edit({ attachments:[] }).catch(() => {});
+    }
+    await removeParticipant(clip.id, interaction.user.id);
+    await syncClipMessage(clip.id).catch(error => log(`Discord clip sync failed for ${clip.id}: ${error.message}`));
+    removed += 1;
+  }
+  const remaining = affectedClips(interaction.guildId, interaction.user.id, true).length;
+  return interaction.editReply({ content:`Removed your voice from ${removed} clip${removed === 1 ? '' : 's'}.${remaining ? ` ${remaining} remain; run \`/privacy remove-past\` again to continue.` : ''} Copies already downloaded cannot be recalled.`, components:[] });
 }
 
 client.once(Events.ClientReady, async ready => {
@@ -164,6 +255,9 @@ client.on(Events.InteractionCreate, async interaction => {
       return interaction.respond(rows.map(clip => ({ name:`${clip.title} · ${formatDuration(clip.duration)}`.slice(0, 100), value:clip.id })));
     }
     if (interaction.isButton() && interaction.customId.startsWith('play:')) return playInVoice(interaction);
+    if (interaction.isButton() && interaction.customId.startsWith('clip-remove:')) return removeVoice(interaction);
+    if (interaction.isButton() && interaction.customId.startsWith('clip-clone:')) return cloneVoice(interaction);
+    if (interaction.isButton() && interaction.customId.startsWith('privacy-remove-past:')) return confirmPastRemoval(interaction);
     if (interaction.isButton() && interaction.customId === 'privacy:allow') return updatePrivacy(interaction, true);
     if (interaction.isButton() && interaction.customId === 'privacy:block') return updatePrivacy(interaction, false);
     if (!interaction.isChatInputCommand()) return;
@@ -190,6 +284,7 @@ client.on(Events.InteractionCreate, async interaction => {
       const command = interaction.options.getSubcommand();
       if (command === 'allow') return updatePrivacy(interaction, true);
       if (command === 'block') return updatePrivacy(interaction, false);
+      if (command === 'remove-past') return requestPastRemoval(interaction);
       return privacyStatus(interaction);
     }
   } catch (error) {
@@ -203,6 +298,11 @@ client.on(Events.InteractionCreate, async interaction => {
 
 const heartbeat = setInterval(() => { for (const [guildId, state] of active) setRuntime(guildId, state); }, 10_000);
 heartbeat.unref();
+const discordSync = setInterval(() => {
+  const pending = db.prepare('SELECT id FROM clips WHERE discord_sync_pending=1 AND discord_message_id IS NOT NULL LIMIT 5').all();
+  for (const clip of pending) void syncClipMessage(clip.id).catch(error => log(`Discord clip sync failed for ${clip.id}: ${error.message}`));
+}, 5_000);
+discordSync.unref();
 function shutdown() { for (const [guildId, state] of active) { state.recorder.stop(); state.connection.destroy(); setRuntime(guildId, null); } client.destroy(); }
 process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
 
