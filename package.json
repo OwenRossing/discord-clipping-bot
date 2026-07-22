@@ -12,7 +12,7 @@
     "cleanup": "node scripts/cleanupExpired.js",
     "backup-db": "node scripts/backupDatabase.js",
     "test": "node --test test/*.test.js",
-    "check": "node --check api/server.js && node --check api/devAuth.js && node --check api/guildAccess.js && node --check api/routes/clips.js && node --check api/routes/servers.js && node --check bot/bot.js && node --check bot/clipManager.js && node --check bot/participation.js && node --check scripts/backupDatabase.js && node --check scripts/devServer.js && node --experimental-vm-modules -e \"const fs=require('fs'),vm=require('vm');for(const file of ['web/api.js','web/app.js'])new vm.SourceTextModule(fs.readFileSync(file,'utf8'))\"",
+    "check": "node --check api/server.js && node --check api/devAuth.js && node --check api/guildAccess.js && node --check api/platformAccess.js && node --check api/routes/clips.js && node --check api/routes/servers.js && node --check api/routes/platform.js && node --check bot/bot.js && node --check bot/clipManager.js && node --check bot/participation.js && node --check scripts/backupDatabase.js && node --check scripts/devServer.js && node --experimental-vm-modules -e \"const fs=require('fs'),vm=require('vm');for(const file of ['web/api.js','web/app.js'])new vm.SourceTextModule(fs.readFileSync(file,'utf8'))\"",
     "security-check": "npm run check && npm test && npm audit --omit=dev --audit-level=high"
   },
   "dependencies": {

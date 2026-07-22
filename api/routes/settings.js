@@ -16,8 +16,14 @@ function response(row) {
     buffer_size_minutes:Number(row.buffer_size_minutes || 30),
     retention_days:Number(row.retention_days || 90),
     consent_mode:row.consent_mode || 'notice',
+    plan:row.plan || 'free',
     storage_quota_bytes:Number(row.storage_quota_bytes || 1073741824),
     storage_used_bytes:guildUsage(row.guild_id),
+    max_clip_seconds:Number(row.max_clip_seconds || 1800),
+    max_retention_days:Number(row.max_retention_days || 3650),
+    max_buffer_minutes:Number(row.max_buffer_minutes || 30),
+    suspended:Boolean(row.suspended_at),
+    suspension_reason:row.suspension_reason || '',
     onboarding_completed_at:row.onboarding_completed_at
   };
 }
@@ -32,9 +38,13 @@ router.get('/:guild', (req, res) => {
 router.post('/:guild', (req, res) => {
   if (!allowed(req, req.params.guild)) return res.status(403).json({ error:'Admin access required.' });
   const body = req.body || {};
+  const current = db.prepare('SELECT * FROM servers WHERE guild_id=?').get(req.params.guild);
+  if (!current) return res.status(404).json({ error:'Server not found.' });
   const consentMode = ['notice', 'explicit'].includes(body.consent_mode) ? body.consent_mode : 'notice';
-  const bufferMinutes = Math.min(30, Math.max(15, Number(body.buffer_size_minutes) || 30));
-  const retentionDays = Math.min(3650, Math.max(1, Number(body.retention_days) || 90));
+  const maxBufferMinutes = Number(current.max_buffer_minutes || 30);
+  const maxRetentionDays = Number(current.max_retention_days || 3650);
+  const bufferMinutes = Math.min(maxBufferMinutes, Math.max(5, Number(body.buffer_size_minutes) || maxBufferMinutes));
+  const retentionDays = Math.min(maxRetentionDays, Math.max(1, Number(body.retention_days) || Math.min(90, maxRetentionDays)));
   const now = Date.now();
   db.prepare(`INSERT INTO servers(guild_id,clips_channel_id,buffer_size_minutes,retention_days,consent_mode,onboarding_completed_at,created_at)
     VALUES(?,?,?,?,?,?,?) ON CONFLICT(guild_id) DO UPDATE SET

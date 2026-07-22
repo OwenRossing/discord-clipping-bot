@@ -29,6 +29,8 @@ $env:DEV_GUILD_ID='YOUR_DISCORD_SERVER_ID'
 npm.cmd run dev
 ```
 
+To enable the owner-only platform console, set `PLATFORM_OWNER_IDS` to your Discord user ID (or a comma-separated list of trusted owner IDs) before signing in. Platform owners get a **Platform controls** link in the account menu where they can manually grant Premium, set storage/clip/retention/buffer limits, pause recording for a server with a private moderation reason, and review audited changes. There is intentionally no default super admin and no payment integration.
+
 For real Discord login, register the exact callback URL shown by `discord.redirectUri` in the Discord Developer Portal. For local testing that is normally `http://localhost:3000/api/auth/discord/callback`; the scheme, host, port, and path must match exactly.
 
 Use `/record start` in a voice channel, then `/clipthat` or `/clipthat duration:2m title:Great round`. `/record stop` stops and clears the RAM buffer, and `/record status` reports recorder health. `/privacy allow` and `/privacy block` control future capture; `/privacy remove-past` confirms and removes the member from already-saved clips. Every posted clip also has **Remove my voice** and **Add me (new cut)** buttons. Adding yourself creates a personal copy without changing the original. `/clips recent` shows titled moments with open buttons; `/clips open` has server-scoped title autocomplete. The old join/leave, `/clip`, list, and edit forms remain as one-release compatibility aliases.

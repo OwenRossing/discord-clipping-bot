@@ -35,6 +35,10 @@ function getServerSettings(guildId) {
   return db.prepare('SELECT * FROM servers WHERE guild_id=?').get(guildId);
 }
 
+function ensureRecordingAvailable(settings) {
+  if (settings.suspended_at) throw new Error(`Recording is paused for this server${settings.suspension_reason ? `: ${settings.suspension_reason}` : '.'}`);
+}
+
 function clipButtons(clipId) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`play:${clipId}`).setLabel('Play in voice').setStyle(ButtonStyle.Primary),
@@ -86,10 +90,12 @@ async function syncClipMessage(clipId) {
 }
 
 async function recordClip({ guild, guildId, user, channel, duration, title }) {
+  const settings = getServerSettings(guildId);
+  ensureRecordingAvailable(settings);
+  if (duration > Number(settings.max_clip_seconds || 1800)) throw new Error(`This server limits clips to ${formatDuration(settings.max_clip_seconds || 1800)}.`);
   const state = active.get(guildId);
   if (!state) throw new Error('Recording is not active. Ask a bot admin to use `/record start`.');
   const clip = await createClip({ guildId, createdBy:user.id, duration, title, audio:state.recorder.extract(duration), members:[...guild.members.cache.values()] });
-  const settings = getServerSettings(guildId);
   const destination = guild.channels.cache.get(settings.clips_channel_id)
     || guild.channels.cache.find(candidate => candidate.name === config.bot.defaultClipsChannel)
     || channel;
@@ -105,13 +111,14 @@ async function startRecording(interaction, legacy = false) {
   const previous = active.get(interaction.guildId);
   previous?.recorder.stop(); previous?.connection.destroy();
   const settings = getServerSettings(interaction.guildId);
+  ensureRecordingAvailable(settings);
   const connection = joinVoiceChannel({ channelId:voiceChannel.id, guildId:interaction.guildId, adapterCreator:interaction.guild.voiceAdapterCreator, selfDeaf:false, selfMute:true, daveEncryption:true });
   connection.on('error', error => log(`Voice connection error in ${interaction.guildId}: ${error.message}`));
   let recorder, voiceReady = false;
   try {
     await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
     voiceReady = true;
-    recorder = new Recorder(settings.buffer_size_minutes || config.bot.defaultBufferMinutes, { shouldRecord:userId => isRecordingAllowed(interaction.guildId, userId) });
+    recorder = new Recorder(Math.min(settings.buffer_size_minutes || config.bot.defaultBufferMinutes, settings.max_buffer_minutes || 30), { shouldRecord:userId => isRecordingAllowed(interaction.guildId, userId) });
     recorder.start(connection);
     const state = { connection, recorder, voiceChannelId:voiceChannel.id, voiceChannelName:voiceChannel.name, startedAt:Date.now() };
     active.set(interaction.guildId, state); setRuntime(interaction.guildId, state);
@@ -182,7 +189,7 @@ async function showSettings(interaction) {
   if (!isBotAdmin(interaction.guild, interaction.member)) throw new Error('Bot admin access is required.');
   const settings = getServerSettings(interaction.guildId);
   const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setURL(dashboardUrl(`/servers/${interaction.guildId}/manage`)).setLabel('Open server settings').setStyle(ButtonStyle.Link));
-  return interaction.reply(ephemeral({ content:`**Recording settings**\nBuffer: ${settings.buffer_size_minutes} minutes\nRetention: ${settings.retention_days} days\nVoice privacy: ${settings.consent_mode === 'explicit' ? 'explicit opt-in' : 'visible notice with opt-out'}\nClips channel: ${settings.clips_channel_id ? `<#${settings.clips_channel_id}>` : `#${config.bot.defaultClipsChannel}`}`, components:[row] }));
+  return interaction.reply(ephemeral({ content:`**Recording settings**\nPlan: ${settings.plan === 'premium' ? 'Premium' : 'Free'}${settings.suspended_at ? ' · recording paused' : ''}\nBuffer: ${settings.buffer_size_minutes} minutes\nRetention: ${settings.retention_days} days\nMaximum clip: ${formatDuration(settings.max_clip_seconds || 1800)}\nVoice privacy: ${settings.consent_mode === 'explicit' ? 'explicit opt-in' : 'visible notice with opt-out'}\nClips channel: ${settings.clips_channel_id ? `<#${settings.clips_channel_id}>` : `#${config.bot.defaultClipsChannel}`}`, components:[row] }));
 }
 
 async function playInVoice(interaction) {
@@ -321,7 +328,11 @@ async function handleInteraction(interaction) {
 client.on(Events.InteractionCreate, interaction => { void runInteraction(interaction, handleInteraction, log); });
 
 const heartbeat = setInterval(() => {
-  try { for (const [guildId, state] of active) setRuntime(guildId, state); }
+  try { for (const [guildId, state] of active) {
+    const server = getServerSettings(guildId);
+    if (server.suspended_at) { state.recorder.stop(); state.connection.destroy(); active.delete(guildId); setRuntime(guildId, null); continue; }
+    setRuntime(guildId, state);
+  } }
   catch (error) { log(`Recorder heartbeat failed: ${error.stack || error.message}`); }
 }, 10_000);
 heartbeat.unref();

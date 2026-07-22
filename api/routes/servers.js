@@ -33,6 +33,8 @@ function serverProfile(req, row) {
     iconUrl: iconUrl({ ...row, icon: oauth?.icon }),
     accent: accentFor(row.guild_id),
     botDisplayName: usefulName(row.bot_display_name, row.guild_id) || 'ClipThat',
+    plan:row.plan || 'free',
+    recordingSuspended:Boolean(row.suspended_at),
     botInstalled: Boolean(row.bot_present),
     capabilities: {
       canManage: isPlatformAdmin(req, row.guild_id),

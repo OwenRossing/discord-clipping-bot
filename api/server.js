@@ -47,6 +47,7 @@ app.use('/api/settings', require('./routes/settings'));
 app.use('/api/admins', require('./routes/admins'));
 app.use('/api/discord', require('./routes/discord'));
 app.use('/api/servers', require('./routes/servers'));
+app.use('/api/platform', require('./routes/platform'));
 app.get('/api/health', (req, res) => {
   try {
     db.prepare('SELECT 1').get();
@@ -56,7 +57,7 @@ app.get('/api/health', (req, res) => {
 app.get('/editor.html', (req, res) => res.redirect(302, req.query.clip_id ? `/clips/${encodeURIComponent(req.query.clip_id)}` : '/'));
 app.get('/admin.html', (req, res) => res.redirect(302, req.query.guild ? `/servers/${encodeURIComponent(req.query.guild)}/manage` : '/'));
 app.use(express.static(path.resolve(process.cwd(), 'web')));
-app.get(['/servers/:guildId/:view', '/clips/:clipId'], (req, res) => res.sendFile(path.resolve(process.cwd(), 'web', 'index.html')));
+app.get(['/servers/:guildId/:view', '/clips/:clipId', '/platform'], (req, res) => res.sendFile(path.resolve(process.cwd(), 'web', 'index.html')));
 app.use((error, req, res, next) => {
   log(error.stack || error.message);
   const status = Number(error.status) || (error.type === 'entity.too.large' ? 413 : 500);

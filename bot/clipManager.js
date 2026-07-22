@@ -27,6 +27,9 @@ function encodeSilence(duration, output) {
   return new Promise((resolve, reject) => execFile(process.env.FFMPEG_PATH || bundledFfmpeg || 'ffmpeg', args, PROCESS_OPTIONS, error => error ? reject(error) : resolve()));
 }
 async function createClip({ guildId, createdBy, duration, audio, members = [], title }) {
+  const serverLimits = db.prepare('SELECT suspended_at,suspension_reason,max_clip_seconds FROM servers WHERE guild_id=?').get(guildId);
+  if (serverLimits?.suspended_at) throw new Error(`Recording is paused for this server${serverLimits.suspension_reason ? `: ${serverLimits.suspension_reason}` : '.'}`);
+  if (Number(duration) > Number(serverLimits?.max_clip_seconds || 1800)) throw new Error(`This server limits clips to ${serverLimits?.max_clip_seconds || 1800} seconds.`);
   if (!audio.size) throw new Error('No audio has been captured in the requested window.');
   const timestamp = Date.now(), id = `${timestamp}`;
   db.prepare('INSERT OR IGNORE INTO servers(guild_id, created_at) VALUES(?, ?)').run(guildId, timestamp);

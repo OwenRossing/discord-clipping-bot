@@ -4,6 +4,7 @@ const { loadConfig } = require('../../bot/utils');
 const db = require('../db');
 const { ensureCsrfToken } = require('../middleware/security');
 const { developmentCodeAvailable, consumeDevelopmentCode } = require('../devAuth');
+const { isPlatformOwner } = require('../platformAccess');
 const config = loadConfig();
 const router = express.Router();
 const regenerate = req => new Promise((resolve, reject) => req.session.regenerate(error => error ? reject(error) : resolve()));
@@ -111,7 +112,7 @@ router.get('/me', (req, res) => {
   }
   const grants = db.prepare('SELECT guild_id FROM server_admins WHERE user_id=?').all(req.session.user.userId).map(row => row.guild_id);
   const accessGuilds = [...new Set([...(req.session.user.roleAdminGuilds || []), ...grants])];
-  res.json({ ...req.session.user, avatarUrl: avatarUrl(req.session.user), accessGuilds, csrfToken: ensureCsrfToken(req) });
+  res.json({ ...req.session.user, avatarUrl: avatarUrl(req.session.user), accessGuilds, platformOwner:isPlatformOwner(req.session.user.userId), csrfToken: ensureCsrfToken(req) });
 });
 module.exports = router;
 module.exports.safeReturnTo = safeReturnTo;

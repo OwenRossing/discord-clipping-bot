@@ -40,12 +40,12 @@ test.after(() => { db.close(); fs.rmSync(testRoot, { recursive: true, force: tru
 
 test('empty database migrates to the latest schema', () => {
   const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => row.name));
-  for (const name of ['clips', 'clip_revisions', 'clip_activity', 'clip_previews', 'clip_participants', 'server_runtime', 'recording_preferences', 'schema_migrations']) assert.ok(tables.has(name));
+  for (const name of ['clips', 'clip_revisions', 'clip_activity', 'clip_previews', 'clip_participants', 'server_runtime', 'recording_preferences', 'platform_activity', 'schema_migrations']) assert.ok(tables.has(name));
   assert.equal(db.prepare('SELECT MAX(version) version FROM schema_migrations').get().version, schemaVersion);
   const columns = new Set(db.prepare('PRAGMA table_info(clips)').all().map(row => row.name));
   for (const name of ['title', 'current_revision_id', 'deleted_at', 'deleted_by', 'purge_at', 'deletion_reason', 'storage_bytes', 'participant_version', 'privacy_rendering', 'source_clip_id', 'participant_clone_user_id']) assert.ok(columns.has(name));
   const serverColumns = new Set(db.prepare('PRAGMA table_info(servers)').all().map(row => row.name));
-  for (const name of ['name', 'icon_hash', 'owner_id', 'bot_present', 'profile_updated_at', 'consent_mode', 'storage_quota_bytes', 'onboarding_completed_at', 'bot_display_name']) assert.ok(serverColumns.has(name));
+  for (const name of ['name', 'icon_hash', 'owner_id', 'bot_present', 'profile_updated_at', 'consent_mode', 'storage_quota_bytes', 'onboarding_completed_at', 'bot_display_name', 'plan', 'max_clip_seconds', 'max_retention_days', 'max_buffer_minutes', 'suspended_at', 'suspension_reason']) assert.ok(serverColumns.has(name));
   assert.ok(db.prepare('PRAGMA table_info(clip_revisions)').all().some(row => row.name === 'waveform_path'));
 });
 
@@ -165,6 +165,40 @@ test('temporary local login is one-time, direct-only, and limited to its configu
     const replay = await fetch(`${base}/api/auth/dev`, { method:'POST', headers:{ Cookie:sessionCookie, Origin:base, 'Content-Type':'application/json', 'X-CSRF-Token':loginBody.csrfToken }, body:JSON.stringify({ code }) });
     assert.equal(replay.status, 401);
   } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('platform controls require an environment owner and audit premium, limit, and moderation changes', async () => {
+  const previousOwners = process.env.PLATFORM_OWNER_IDS;
+  delete process.env.PLATFORM_OWNER_IDS;
+  const app = require('../api/server');
+  const server = await new Promise(resolve => { const instance = app.listen(0, '127.0.0.1', () => resolve(instance)); });
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const { cookie, csrfToken } = await developmentSession(base);
+    const denied = await fetch(`${base}/api/platform/servers`, { headers:{ Cookie:cookie } });
+    assert.equal(denied.status, 403);
+
+    process.env.PLATFORM_OWNER_IDS = process.env.DEV_USER_ID;
+    const listed = await fetch(`${base}/api/platform/servers`, { headers:{ Cookie:cookie } });
+    assert.equal(listed.status, 200);
+    assert.ok((await listed.json()).servers.some(item => item.guild_id === 'guild'));
+
+    const headers = { Cookie:cookie, Origin:base, 'Content-Type':'application/json', 'X-CSRF-Token':csrfToken };
+    const missingReason = await fetch(`${base}/api/platform/servers/guild`, { method:'PATCH', headers, body:JSON.stringify({ plan:'premium', storage_quota_bytes:2097152, max_clip_seconds:120, max_retention_days:365, max_buffer_minutes:20, suspended:true }) });
+    assert.equal(missingReason.status, 400);
+    const updated = await fetch(`${base}/api/platform/servers/guild`, { method:'PATCH', headers, body:JSON.stringify({ plan:'premium', storage_quota_bytes:2097152, max_clip_seconds:120, max_retention_days:365, max_buffer_minutes:20, suspended:true, suspension_reason:'Manual review' }) });
+    assert.equal(updated.status, 200);
+    const body = (await updated.json()).server;
+    assert.equal(body.plan, 'premium'); assert.equal(body.suspended, true); assert.equal(body.max_clip_seconds, 120);
+    assert.equal(db.prepare("SELECT buffer_size_minutes FROM servers WHERE guild_id='guild'").get().buffer_size_minutes, 20);
+    assert.equal(db.prepare("SELECT COUNT(*) count FROM platform_activity WHERE guild_id='guild'").get().count > 0, true);
+
+    const restored = await fetch(`${base}/api/platform/servers/guild`, { method:'PATCH', headers, body:JSON.stringify({ plan:'free', storage_quota_bytes:1073741824, max_clip_seconds:1800, max_retention_days:3650, max_buffer_minutes:30, suspended:false, suspension_reason:'' }) });
+    assert.equal(restored.status, 200);
+  } finally {
+    if (previousOwners == null) delete process.env.PLATFORM_OWNER_IDS; else process.env.PLATFORM_OWNER_IDS = previousOwners;
+    await new Promise(resolve => server.close(resolve));
+  }
 });
 
 test('redirect, content-type, request-id, and storage boundaries fail closed', async () => {

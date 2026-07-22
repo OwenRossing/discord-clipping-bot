@@ -240,7 +240,29 @@ function botIdentitySchema(database) {
   addColumn(database, "servers", "bot_display_name TEXT NOT NULL DEFAULT 'ClipThat'");
 }
 
-const migrations = [createBaseSchema, expandClipSchema, personalizeServerSchema, publicBetaSchema, participantPrivacySchema, botIdentitySchema];
+function platformManagementSchema(database) {
+  addColumn(database, "servers", "plan TEXT NOT NULL DEFAULT 'free'");
+  addColumn(database, 'servers', 'max_clip_seconds INTEGER NOT NULL DEFAULT 1800');
+  addColumn(database, 'servers', 'max_retention_days INTEGER NOT NULL DEFAULT 3650');
+  addColumn(database, 'servers', 'max_buffer_minutes INTEGER NOT NULL DEFAULT 30');
+  addColumn(database, 'servers', 'suspended_at INTEGER');
+  addColumn(database, 'servers', 'suspended_by TEXT');
+  addColumn(database, 'servers', 'suspension_reason TEXT');
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS platform_activity (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      guild_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      details TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_platform_activity_created ON platform_activity(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_platform_activity_guild ON platform_activity(guild_id, created_at DESC);
+  `);
+}
+
+const migrations = [createBaseSchema, expandClipSchema, personalizeServerSchema, publicBetaSchema, participantPrivacySchema, botIdentitySchema, platformManagementSchema];
 
 function initializeDatabase(database) {
   database.pragma('foreign_keys = ON');
