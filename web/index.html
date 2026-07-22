@@ -4,14 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#080b12">
-  <title>Clip Vault</title>
+  <title>ClipThat</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <section id="welcome" class="welcome" hidden></section>
   <div id="appShell" class="app-shell" hidden>
     <aside class="server-rail" aria-label="Discord servers">
-      <a class="vault-mark" href="/" data-route aria-label="Clip Vault home">CV</a>
       <div id="serverRail" class="server-stack"></div>
       <button id="openServerPicker" class="rail-button" type="button" aria-label="Switch or add server">+</button>
     </aside>
@@ -38,6 +37,8 @@
   </div>
   <dialog id="serverDialog" class="sheet"><div class="sheet-head"><h2>Your servers</h2><button class="icon-control" data-close-dialog type="button" aria-label="Close">&times;</button></div><div id="serverChoices"></div></dialog>
   <dialog id="accountDialog" class="sheet"><div class="sheet-head"><h2>Account</h2><button class="icon-control" data-close-dialog type="button" aria-label="Close">&times;</button></div><div id="accountContent"></div></dialog>
+  <dialog id="renameDialog" class="sheet compact-sheet"><form id="renameForm"><div class="sheet-head"><h2 id="renameTitle">Rename clip</h2><button class="icon-control" data-close-dialog type="button" aria-label="Close">&times;</button></div><label><span id="renameLabel">Clip title</span><input id="renameInput" maxlength="80" autocomplete="off" required></label><div class="dialog-actions"><button class="button secondary" data-close-dialog type="button">Cancel</button><button id="renameSubmit" class="button" type="submit">Save name</button></div></form></dialog>
+  <dialog id="confirmDialog" class="sheet compact-sheet"><div class="sheet-head"><h2 id="confirmTitle">Confirm action</h2><button class="icon-control" data-confirm-value="false" type="button" aria-label="Close">&times;</button></div><p id="confirmMessage" class="dialog-copy"></p><div class="dialog-actions"><button class="button secondary" data-confirm-value="false" type="button">Cancel</button><button id="confirmButton" class="button" data-confirm-value="true" type="button">Continue</button></div></dialog>
   <div id="toastRegion" class="toast-region" aria-live="polite"></div>
   <script type="module" src="/app.js"></script>
 </body>

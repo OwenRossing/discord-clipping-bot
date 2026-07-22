@@ -1,9 +1,11 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth, isGuildOwner } = require('../middleware/auth');
+const { attachGuildAccess } = require('../guildAccess');
 
 const router = express.Router();
 router.use(requireAuth);
+router.param('guild', (req, res, next, guildId) => { attachGuildAccess(req, guildId).then(() => next(), next); });
 
 function assertOwner(req, res, guildId) {
   if (!req.user.guildIds?.includes(guildId) || !isGuildOwner(req, guildId)) {

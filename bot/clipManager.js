@@ -3,27 +3,28 @@ const path = require('path');
 const { execFile } = require('child_process');
 const bundledFfmpeg = require('ffmpeg-static');
 const db = require('../api/db');
-const { assertQuota, refreshClipStorage, removeClipDirectory } = require('../api/storage');
+const { assertQuota, refreshClipStorage, removeClipDirectory, clipsRoot, inside } = require('../api/storage');
 const { loadConfig } = require('./utils');
 const config = loadConfig();
+const PROCESS_OPTIONS = { timeout:5 * 60 * 1000, maxBuffer:256 * 1024, windowsHide:true };
 
 function encode(inputs, output, options = {}) {
-  const args = ['-y'];
+  const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-y'];
   for (const input of inputs) args.push('-f', 's16le', '-ar', '48000', '-ac', '2', '-i', input);
   const active = inputs.map((_, i) => `[${i}:a]volume=${options.volumes?.[i] ?? 1}[v${i}]`).join(';');
   const mix = inputs.map((_, i) => `[v${i}]`).join('');
   const trim = options.start !== undefined ? `,atrim=start=${options.start}:end=${options.end},asetpts=PTS-STARTPTS` : '';
   args.push('-filter_complex', `${active};${mix}amix=inputs=${inputs.length}:normalize=0${trim}[a]`, '-map', '[a]', '-c:a', 'libmp3lame', '-q:a', '2', output);
-  return new Promise((resolve, reject) => execFile(process.env.FFMPEG_PATH || bundledFfmpeg || 'ffmpeg', args, error => error ? reject(error) : resolve()));
+  return new Promise((resolve, reject) => execFile(process.env.FFMPEG_PATH || bundledFfmpeg || 'ffmpeg', args, PROCESS_OPTIONS, error => error ? reject(error) : resolve()));
 }
 function renderWaveform(audioPath, output) {
   fs.mkdirSync(path.dirname(output), { recursive: true });
-  const args = ['-y', '-i', audioPath, '-filter_complex', 'aformat=channel_layouts=mono,showwavespic=s=1200x180:colors=white', '-frames:v', '1', output];
-  return new Promise((resolve, reject) => execFile(process.env.FFMPEG_PATH || bundledFfmpeg || 'ffmpeg', args, error => error ? reject(error) : resolve()));
+  const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-i', audioPath, '-filter_complex', 'aformat=channel_layouts=mono,showwavespic=s=1200x180:colors=white', '-frames:v', '1', output];
+  return new Promise((resolve, reject) => execFile(process.env.FFMPEG_PATH || bundledFfmpeg || 'ffmpeg', args, { ...PROCESS_OPTIONS, timeout:60_000 }, error => error ? reject(error) : resolve()));
 }
 function encodeSilence(duration, output) {
-  const args = ['-y', '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-t', String(Math.max(0.1, Number(duration) || 0.1)), '-c:a', 'libmp3lame', '-q:a', '2', output];
-  return new Promise((resolve, reject) => execFile(process.env.FFMPEG_PATH || bundledFfmpeg || 'ffmpeg', args, error => error ? reject(error) : resolve()));
+  const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-t', String(Math.max(0.1, Number(duration) || 0.1)), '-c:a', 'libmp3lame', '-q:a', '2', output];
+  return new Promise((resolve, reject) => execFile(process.env.FFMPEG_PATH || bundledFfmpeg || 'ffmpeg', args, PROCESS_OPTIONS, error => error ? reject(error) : resolve()));
 }
 async function createClip({ guildId, createdBy, duration, audio, members = [], title }) {
   if (!audio.size) throw new Error('No audio has been captured in the requested window.');
@@ -32,10 +33,15 @@ async function createClip({ guildId, createdBy, duration, audio, members = [], t
   const estimatedBytes = [...audio.values()].reduce((total, pcm) => total + pcm.length, 0) + Math.ceil(duration * 32000);
   assertQuota(guildId, estimatedBytes);
   const dir = path.resolve(process.cwd(), config.storage.clipsDir, guildId, id);
+  if (!inside(clipsRoot, dir)) throw new Error('Unsafe clip storage path.');
   try {
     fs.mkdirSync(dir, { recursive: true });
     const users = [];
-    for (const [userId, pcm] of audio) { fs.writeFileSync(path.join(dir, `${userId}.pcm`), pcm); users.push({ id: userId, name: members.find(m => m.id === userId)?.displayName || userId }); }
+    for (const [userId, pcm] of audio) {
+      const track = path.join(dir, `${userId}.pcm`);
+      if (!inside(dir, track)) throw new Error('Unsafe speaker storage path.');
+      fs.writeFileSync(track, pcm); users.push({ id: userId, name: members.find(m => m.id === userId)?.displayName || userId });
+    }
     const cleanTitle = typeof title === 'string' && title.trim() ? Array.from(title.trim()).slice(0, 80).join('') : `Clip ${id}`;
     const metadata = { clip_id: id, title: cleanTitle, guild_id: guildId, timestamp, duration, users_involved: users, created_by: createdBy, original_audio_path: dir, start_trim: 0, end_trim: duration, user_mutes: {}, user_volumes: {} };
     fs.writeFileSync(path.join(dir, 'metadata.json'), JSON.stringify(metadata, null, 2));

@@ -7,8 +7,9 @@ const { requireAuth, isPlatformAdmin, hasGuildAccess, clipCapabilities } = requi
 const { encode, renderWaveform } = require('../../bot/clipManager');
 const { loadConfig } = require('../../bot/utils');
 const { runAudioJob, checkPreviewRate } = require('../audioJobs');
-const { assertQuota, refreshClipStorage } = require('../storage');
+const { assertQuota, refreshClipStorage, clipsRoot, inside } = require('../storage');
 const { cloneWithParticipant, participant, participants, removeParticipant, revisionReady } = require('../../bot/participation');
+const { attachGuildAccess } = require('../guildAccess');
 
 const router = express.Router();
 const config = loadConfig();
@@ -22,13 +23,11 @@ function json(value, fallback) {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
 }
 
-function inside(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-}
+function insideClip(clip, candidate) { return inside(clipsRoot, clip.original_audio_path) && inside(clip.original_audio_path, candidate); }
 
 function safeUnlink(file, root) {
-  if (file && inside(root, file)) {
+  const safeRoot = path.resolve(root) === previewRoot ? inside(previewRoot, file) : inside(clipsRoot, root) && inside(root, file);
+  if (file && safeRoot) {
     try { fs.unlinkSync(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
 }
@@ -187,9 +186,9 @@ function validateEdit(clip, body) {
 }
 
 function render(clip, state, output) {
-  if (!inside(clip.original_audio_path, output) && !inside(previewRoot, output)) throw new Error('Unsafe audio output path.');
+  if (!insideClip(clip, output) && !inside(previewRoot, output)) throw new Error('Unsafe audio output path.');
   const inputs = state.activeUsers.map(user => path.resolve(clip.original_audio_path, `${user.id}.pcm`));
-  if (inputs.some(input => !inside(clip.original_audio_path, input))) throw new Error('Unsafe source audio path.');
+  if (inputs.some(input => !insideClip(clip, input))) throw new Error('Unsafe source audio path.');
   fs.mkdirSync(path.dirname(output), { recursive: true });
   return encode(inputs, output, { start: state.start, end: state.end, volumes: state.activeUsers.map(user => state.userVolumes[user.id]) });
 }
@@ -198,8 +197,15 @@ function asyncRoute(handler) {
   return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 }
 
-router.get('/', (req, res) => {
+router.param('id', (req, res, next, id) => {
+  const clip = getClip(id);
+  if (!clip) return next();
+  attachGuildAccess(req, clip.guild_id).then(() => next(), next);
+});
+
+router.get('/', asyncRoute(async (req, res) => {
   const guildId = String(req.query.guild || '');
+  if (guildId) await attachGuildAccess(req, guildId);
   if (!guildId || !hasGuildAccess(req, guildId)) return res.status(403).json({ error: 'Server access denied.' });
   const trash = req.query.trash === '1';
   if (trash && !isPlatformAdmin(req, guildId)) return res.status(403).json({ error: 'Only bot admins can view trash.' });
@@ -235,7 +241,7 @@ router.get('/', (req, res) => {
   const last = rows[rows.length - 1];
   const nextCursor = rows.length === limit && last ? Buffer.from(JSON.stringify({ createdAt:last.created_at, id:last.id })).toString('base64url') : null;
   res.json({ clips: rows.map(clip => serializeClip(req, clip)), count, limit, offset:useOffset ? offset : undefined, next_cursor:nextCursor, trash });
-});
+}));
 
 router.get('/:id/metadata', (req, res) => {
   const clip = memberClip(req, res, { allowDeleted: true });
@@ -261,7 +267,7 @@ router.get('/:id/audio', (req, res, next) => {
   const revision = currentRevision(clip);
   if (!revisionReady(clip, revision)) return res.status(423).json({ error:'This clip is applying a voice privacy change. Try again shortly.', code:'PRIVACY_RENDERING' });
   const file = revision?.audio_path || clip.edited_audio_path || path.join(clip.original_audio_path, 'original.mp3');
-  if (!inside(clip.original_audio_path, file)) return res.status(500).json({ error: 'Audio path failed a safety check.' });
+  if (!insideClip(clip, file)) return res.status(500).json({ error: 'Audio path failed a safety check.' });
   res.set('Cache-Control', 'private, no-store');
   res.sendFile(path.resolve(file), error => { if (error && !res.headersSent) next(error); });
 });
@@ -365,7 +371,7 @@ router.get('/:id/revisions/:revisionId/audio', (req, res, next) => {
   const clip = memberClip(req, res, { allowDeleted: true });
   if (!clip || !requireCapability(req, res, clip, 'canViewRevisions', 'Only bot admins can play revision history.')) return;
   const revision = db.prepare('SELECT * FROM clip_revisions WHERE id=? AND clip_id=?').get(Number(req.params.revisionId), clip.id);
-  if (!revision || !inside(clip.original_audio_path, revision.audio_path)) return res.status(404).end();
+  if (!revision || !insideClip(clip, revision.audio_path)) return res.status(404).end();
   if (!revisionReady(clip, revision)) return res.status(423).json({ error:'This revision is unavailable while voice privacy is updating.', code:'PRIVACY_RENDERING' });
   res.set('Cache-Control', 'private, no-store');
   res.sendFile(path.resolve(revision.audio_path), error => { if (error && !res.headersSent) next(error); });
@@ -383,11 +389,11 @@ router.get('/:id/revisions/:revisionId/waveform', asyncRoute(async (req, res, ne
   let waveformPath = revision.waveform_path;
   if (!waveformPath || !fs.existsSync(waveformPath)) {
     waveformPath = path.join(clip.original_audio_path, 'revisions', `waveform-${revision.id}.png`);
-    if (!inside(clip.original_audio_path, waveformPath) || !inside(clip.original_audio_path, revision.audio_path)) return res.status(500).json({ error: 'Waveform path failed a safety check.' });
+    if (!insideClip(clip, waveformPath) || !insideClip(clip, revision.audio_path)) return res.status(500).json({ error: 'Waveform path failed a safety check.' });
     await runAudioJob(clip.id, 'waveform', () => renderWaveform(revision.audio_path, waveformPath));
     db.prepare('UPDATE clip_revisions SET waveform_path=? WHERE id=?').run(waveformPath, revision.id);
   }
-  if (!inside(clip.original_audio_path, waveformPath)) return res.status(500).json({ error: 'Waveform path failed a safety check.' });
+  if (!insideClip(clip, waveformPath)) return res.status(500).json({ error: 'Waveform path failed a safety check.' });
   res.set('Cache-Control', 'private, max-age=31536000, immutable');
   res.sendFile(path.resolve(waveformPath), error => { if (error && !res.headersSent) next(error); });
 }));

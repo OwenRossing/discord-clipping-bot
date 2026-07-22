@@ -1,9 +1,10 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { pipeline } = require('stream/promises');
 const db = require('../api/db');
 const { runAudioJob } = require('../api/audioJobs');
-const { assertQuota, refreshClipStorage, removeClipDirectory } = require('../api/storage');
+const { assertQuota, refreshClipStorage, removeClipDirectory, clipsRoot, inside } = require('../api/storage');
 const { encode, encodeSilence, renderWaveform } = require('./clipManager');
 const { loadConfig } = require('./utils');
 
@@ -17,21 +18,22 @@ function participant(clipId, userId) { return db.prepare('SELECT * FROM clip_par
 function participants(clipId, includedOnly = false) { return db.prepare(`SELECT * FROM clip_participants WHERE clip_id=?${includedOnly ? ' AND included=1' : ''} ORDER BY display_name,user_id`).all(clipId); }
 function revisionReady(clip, revision) { return Boolean(revision && !clip.privacy_rendering && Number(revision.participant_version || 0) === Number(clip.participant_version || 0)); }
 function safeDelete(file, root) {
-  if (!file) return;
-  const relative = path.relative(path.resolve(root), path.resolve(file));
-  if (relative.startsWith('..') || path.isAbsolute(relative)) return;
+  if (!file || !inside(clipsRoot, root) || !inside(root, file)) return;
   try { fs.unlinkSync(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
 }
 
-function readPcmSlice(file, startByte, endByte) {
-  const available = Math.max(0, Math.min(fs.statSync(file).size, endByte) - startByte);
-  const buffer = Buffer.alloc(available);
-  const descriptor = fs.openSync(file, 'r');
-  try { fs.readSync(descriptor, buffer, 0, available, startByte); } finally { fs.closeSync(descriptor); }
-  return buffer;
+function pcmSliceBytes(file, startByte, endByte) {
+  return Math.max(0, Math.min(fs.statSync(file).size, endByte) - startByte);
+}
+
+async function copyPcmSlice(source, destination, startByte, endByte) {
+  const bytes = pcmSliceBytes(source, startByte, endByte);
+  if (!bytes) return fs.writeFileSync(destination, Buffer.alloc(0));
+  await pipeline(fs.createReadStream(source, { start:startByte, end:startByte + bytes - 1 }), fs.createWriteStream(destination, { flags:'wx' }));
 }
 
 async function renderRevision(clip, revision, included, participantVersion) {
+  if (!inside(clipsRoot, clip.original_audio_path)) throw new Error('Unsafe clip storage path.');
   const mutes = json(revision.user_mutes, {}), volumes = json(revision.user_volumes, {});
   const active = included.filter(user => !mutes[user.user_id] && fs.existsSync(path.join(clip.original_audio_path, `${user.user_id}.pcm`)));
   const directory = path.join(clip.original_audio_path, 'revisions');
@@ -105,6 +107,7 @@ function personalCutTitle(title, name) {
 async function cloneWithParticipant(clipId, userId, displayName) {
   const sourceClip = getClip(clipId), sourceParticipant = participant(clipId, userId);
   if (!sourceClip || sourceClip.deleted_at) throw Object.assign(new Error('That active clip is unavailable.'), { status:404 });
+  if (!inside(clipsRoot, sourceClip.original_audio_path)) throw Object.assign(new Error('The source clip failed a storage safety check.'), { status:500, code:'UNSAFE_STORAGE_PATH' });
   if (!sourceParticipant || !fs.existsSync(path.join(sourceClip.original_audio_path, `${userId}.pcm`))) throw Object.assign(new Error('No saved voice track for you exists in this clip.'), { status:404, code:'NO_SOURCE_TRACK' });
   const sourceRevision = currentRevision(sourceClip);
   if (!revisionReady(sourceClip, sourceRevision)) throw Object.assign(new Error('This clip is still applying a privacy change. Try again shortly.'), { status:423, code:'PRIVACY_RENDERING' });
@@ -119,14 +122,16 @@ async function cloneWithParticipant(clipId, userId, displayName) {
   const start = Number(sourceRevision.start_trim), end = Number(sourceRevision.end_trim), duration = end - start;
   const beginByte = Math.max(0, Math.floor(start * PCM_BYTES_PER_SECOND / 4) * 4);
   const endByte = Math.max(beginByte + 4, Math.floor(end * PCM_BYTES_PER_SECOND / 4) * 4);
-  const audio = new Map(available.map(user => {
+  const sourceFiles = new Map(available.map(user => {
     const file = path.join(sourceClip.original_audio_path, `${user.user_id}.pcm`);
-    return [user.user_id, readPcmSlice(file, beginByte, endByte)];
+    if (!inside(sourceClip.original_audio_path, file)) throw Object.assign(new Error('A source track failed a storage safety check.'), { status:500, code:'UNSAFE_STORAGE_PATH' });
+    return [user.user_id, file];
   }));
-  assertQuota(sourceClip.guild_id, [...audio.values()].reduce((sum, pcm) => sum + pcm.length, 0) + Math.ceil(duration * 32000));
+  assertQuota(sourceClip.guild_id, [...sourceFiles.values()].reduce((sum, file) => sum + pcmSliceBytes(file, beginByte, endByte), 0) + Math.ceil(duration * 32000));
 
   const timestamp = Date.now(), id = `${timestamp}-${crypto.randomUUID().slice(0, 8)}`;
   const directory = path.resolve(process.cwd(), config.storage.clipsDir, sourceClip.guild_id, id);
+  if (!inside(clipsRoot, directory)) throw Object.assign(new Error('The destination failed a storage safety check.'), { status:500, code:'UNSAFE_STORAGE_PATH' });
   const users = available.map(user => ({ id:user.user_id, name:user.display_name }));
   const mutes = Object.fromEntries(users.map(user => [user.id, user.id === userId ? false : Boolean(sourceMutes[user.id])]));
   const sourceVolumes = json(sourceRevision.user_volumes, {});
@@ -134,7 +139,11 @@ async function cloneWithParticipant(clipId, userId, displayName) {
   const title = personalCutTitle(sourceClip.title, displayName || sourceParticipant.display_name);
   try {
     fs.mkdirSync(directory, { recursive:true });
-    for (const [participantId, pcm] of audio) fs.writeFileSync(path.join(directory, `${participantId}.pcm`), pcm);
+    for (const [participantId, source] of sourceFiles) {
+      const destination = path.join(directory, `${participantId}.pcm`);
+      if (!inside(directory, destination)) throw new Error('Unsafe destination track path.');
+      await copyPcmSlice(source, destination, beginByte, endByte);
+    }
     const output = path.join(directory, 'original.mp3');
     const active = users.filter(user => !mutes[user.id]);
     const waveform = path.join(directory, 'original.waveform.png');

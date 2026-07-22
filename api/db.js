@@ -236,7 +236,11 @@ function participantPrivacySchema(database) {
   }
 }
 
-const migrations = [createBaseSchema, expandClipSchema, personalizeServerSchema, publicBetaSchema, participantPrivacySchema];
+function botIdentitySchema(database) {
+  addColumn(database, "servers", "bot_display_name TEXT NOT NULL DEFAULT 'ClipThat'");
+}
+
+const migrations = [createBaseSchema, expandClipSchema, personalizeServerSchema, publicBetaSchema, participantPrivacySchema, botIdentitySchema];
 
 function initializeDatabase(database) {
   database.pragma('foreign_keys = ON');

@@ -52,10 +52,10 @@ async function init() {
   if (!clipId) { status.textContent = 'No clip was selected.'; return; }
   try { clip = await apiFetch(`/api/clips/${encodeURIComponent(clipId)}/metadata`); }
   catch (error) { status.textContent = error.status === 401 ? 'Please sign in first.' : error.message || 'Clip unavailable.'; return; }
-  document.title = `${clip.title} · Clip Vault`; document.querySelector('#titleInput').value = clip.title;
+  document.title = `${clip.title} · ClipThat`; document.querySelector('#titleInput').value = clip.title;
   document.querySelector('#titleForm').onsubmit = async event => {
     event.preventDefault();
-    try { clip = await apiFetch(`/api/clips/${encodeURIComponent(clipId)}`, { method: 'PATCH', body: JSON.stringify({ title: document.querySelector('#titleInput').value }) }); document.querySelector('#titleInput').value = clip.title; document.title = `${clip.title} · Clip Vault`; showToast('Clip renamed.', 'success'); }
+    try { clip = await apiFetch(`/api/clips/${encodeURIComponent(clipId)}`, { method: 'PATCH', body: JSON.stringify({ title: document.querySelector('#titleInput').value }) }); document.querySelector('#titleInput').value = clip.title; document.title = `${clip.title} · ClipThat`; showToast('Clip renamed.', 'success'); }
     catch (error) { showToast(error.message, 'error'); }
   };
   document.querySelector('#users').innerHTML = clip.users_involved.map(user => `<article class="speaker" data-id="${escapeHtml(user.id)}"><strong>${escapeHtml(user.name)}</strong><label class="check"><input class="include" type="checkbox"> Include in mix</label><label>Volume <output class="volumeValue">1.0×</output><input class="volume" type="range" min="0.5" max="2" step="0.1"></label></article>`).join('');

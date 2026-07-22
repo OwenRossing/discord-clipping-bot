@@ -3,11 +3,24 @@ const express = require('express');
 const { loadConfig } = require('../../bot/utils');
 const db = require('../db');
 const { ensureCsrfToken } = require('../middleware/security');
+const { developmentCodeAvailable, consumeDevelopmentCode } = require('../devAuth');
 const config = loadConfig();
 const router = express.Router();
 const regenerate = req => new Promise((resolve, reject) => req.session.regenerate(error => error ? reject(error) : resolve()));
 const save = req => new Promise((resolve, reject) => req.session.save(error => error ? reject(error) : resolve()));
 function isLoopback(req) { return ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress); }
+function isDirectLocalRequest(req) {
+  if (!isLoopback(req)) return false;
+  const forwarded = ['forwarded', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'cf-connecting-ip', 'cf-ray'];
+  if (forwarded.some(header => req.get(header))) return false;
+  try {
+    const host = new URL(`http://${req.get('Host') || ''}`);
+    const origin = new URL(req.get('Origin') || '');
+    return ['localhost', '127.0.0.1', '[::1]'].includes(host.hostname)
+      && ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname)
+      && host.host === origin.host;
+  } catch { return false; }
+}
 const attempts = new Map();
 const attemptCleanup = setInterval(() => { const cutoff = Date.now() - 15 * 60 * 1000; for (const [key, times] of attempts) { const recent = times.filter(time => time > cutoff); if (recent.length) attempts.set(key, recent); else attempts.delete(key); } }, 15 * 60 * 1000);
 attemptCleanup.unref();
@@ -17,10 +30,21 @@ function limited(req, res, limit = 12) {
   if (recent.length >= limit) { res.status(429).json({ error: 'Too many login attempts. Try again later.' }); return true; }
   recent.push(now); attempts.set(key, recent); return false;
 }
-function safeReturnTo(value) { return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//') ? value : '/'; }
+function safeReturnTo(value) {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || /[\\\u0000-\u001f\u007f]/.test(value) || /%(?:2f|5c)/i.test(value)) return '/';
+  try {
+    const base = new URL(config.api.baseUrl);
+    const target = new URL(value, base);
+    return target.origin === base.origin ? `${target.pathname}${target.search}${target.hash}` : '/';
+  } catch { return '/'; }
+}
 function avatarUrl(user) { return user.avatar ? `https://cdn.discordapp.com/avatars/${user.userId}/${user.avatar}.webp?size=128` : null; }
 
-router.get('/mode', (req, res) => res.json({ developmentLogin: process.env.NODE_ENV !== 'production' && Boolean(config.development?.enabled), csrfToken: ensureCsrfToken(req) }));
+router.get('/mode', (req, res) => res.json({
+  developmentLogin: process.env.NODE_ENV !== 'production' && Boolean(config.development?.enabled) && developmentCodeAvailable(),
+  developmentLoginCodeRequired: true,
+  csrfToken: ensureCsrfToken(req)
+}));
 router.get('/login', (req, res) => {
   if (limited(req, res, 20)) return;
   if (!config.discord?.clientId || !config.discord?.clientSecret || !config.discord?.redirectUri) return res.status(503).type('text/plain').send('Discord login is not configured. Set Discord environment variables first.');
@@ -57,14 +81,16 @@ router.get('/discord/callback', async (req, res) => {
 
 router.post('/dev', async (req, res, next) => {
   if (limited(req, res)) return;
-  if (process.env.NODE_ENV === 'production' || !config.development?.enabled || !isLoopback(req)) return res.status(404).json({ error: 'Development login is unavailable.' });
+  if (process.env.NODE_ENV === 'production' || !config.development?.enabled || !isDirectLocalRequest(req)) return res.status(404).json({ error: 'Development login is unavailable.', code:'DEV_LOGIN_UNAVAILABLE' });
+  if (!process.env.DEV_USER_ID || !process.env.DEV_GUILD_ID) return res.status(503).json({ error:'Development login requires explicit DEV_USER_ID and DEV_GUILD_ID values.', code:'DEV_LOGIN_NOT_CONFIGURED' });
+  if (!consumeDevelopmentCode(req.body?.code)) return res.status(401).json({ error:'That temporary code is invalid or expired. Restart the development server for a new code.', code:'DEV_CODE_INVALID' });
   try {
     const guild = { id: String(config.development.guildId), name: config.development.guildName, icon: null, owner: true, permissions: String(0x20) };
     await regenerate(req);
     req.session.user = { userId: String(config.development.userId), username: config.development.username, avatar: null, guilds: [guild], guildIds: [guild.id], ownerGuilds: [guild.id], roleAdminGuilds: [guild.id], development: true };
-    db.prepare(`INSERT INTO servers(guild_id, name, owner_id, bot_present, profile_updated_at, created_at) VALUES(?,?,?,?,?,?)
-      ON CONFLICT(guild_id) DO UPDATE SET name=excluded.name, owner_id=excluded.owner_id, bot_present=1, profile_updated_at=excluded.profile_updated_at`)
-      .run(guild.id, guild.name, String(config.development.userId), 1, Date.now(), Date.now());
+    db.prepare(`INSERT INTO servers(guild_id, name, owner_id, bot_present, profile_updated_at, created_at, bot_display_name) VALUES(?,?,?,?,?,?,?)
+      ON CONFLICT(guild_id) DO UPDATE SET name=excluded.name, owner_id=excluded.owner_id, bot_present=1, profile_updated_at=excluded.profile_updated_at,bot_display_name=excluded.bot_display_name`)
+      .run(guild.id, guild.name, String(config.development.userId), 1, Date.now(), Date.now(), 'ClipThat');
     const csrfToken = ensureCsrfToken(req);
     await save(req);
     res.json({ ok: true, csrfToken });
@@ -74,9 +100,8 @@ router.post('/logout', (req, res) => req.session.destroy(() => res.status(204).e
 router.get('/me', (req, res) => {
   if (!req.session.user) return res.json(null);
   if (req.session.user.development && process.env.NODE_ENV !== 'production') {
-    const knownServers = db.prepare('SELECT guild_id, name, icon_hash FROM servers ORDER BY created_at').all();
-    const knownGuildIds = knownServers.map(row => row.guild_id).filter(guildId => guildId && guildId !== 'undefined' && guildId !== 'null');
-    const guildIds = [...new Set([...(req.session.user.guildIds || []), ...knownGuildIds])].filter(guildId => guildId && guildId !== 'undefined' && guildId !== 'null');
+    const guildIds = (req.session.user.guildIds || []).slice(0, 1);
+    const knownServers = guildIds.length ? db.prepare('SELECT guild_id, name, icon_hash FROM servers WHERE guild_id=?').all(guildIds[0]) : [];
     const profiles = new Map(knownServers.map(server => [server.guild_id, server]));
     const knownNames = new Map((req.session.user.guilds || []).map(guild => [guild.id, guild.name]));
     req.session.user.guildIds = guildIds;
@@ -89,3 +114,5 @@ router.get('/me', (req, res) => {
   res.json({ ...req.session.user, avatarUrl: avatarUrl(req.session.user), accessGuilds, csrfToken: ensureCsrfToken(req) });
 });
 module.exports = router;
+module.exports.safeReturnTo = safeReturnTo;
+module.exports.isDirectLocalRequest = isDirectLocalRequest;

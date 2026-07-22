@@ -4,9 +4,11 @@ const db = require('../db');
 const { requireAuth, hasGuildAccess, isPlatformAdmin, isGuildOwner } = require('../middleware/auth');
 const clipsRouter = require('./clips');
 const { guildUsage, serverQuota, removeClipDirectory, removePreviewFile } = require('../storage');
+const { attachGuildAccess } = require('../guildAccess');
 
 const router = express.Router();
 router.use(requireAuth);
+router.param('guildId', (req, res, next, guildId) => { attachGuildAccess(req, guildId).then(() => next(), next); });
 
 function iconUrl(guild) {
   const hash = guild.icon_hash || guild.icon;
@@ -30,6 +32,7 @@ function serverProfile(req, row) {
     name: usefulName(oauth?.name, row.guild_id) || usefulName(row.name, row.guild_id) || 'Discord server',
     iconUrl: iconUrl({ ...row, icon: oauth?.icon }),
     accent: accentFor(row.guild_id),
+    botDisplayName: usefulName(row.bot_display_name, row.guild_id) || 'ClipThat',
     botInstalled: Boolean(row.bot_present),
     capabilities: {
       canManage: isPlatformAdmin(req, row.guild_id),
@@ -39,22 +42,26 @@ function serverProfile(req, row) {
   };
 }
 
-router.get('/', (req, res) => {
-  const installedRows = db.prepare('SELECT * FROM servers WHERE bot_present=1 ORDER BY COALESCE(name, guild_id)').all()
-    .filter(row => hasGuildAccess(req, row.guild_id));
-  const installedIds = new Set(installedRows.map(row => row.guild_id));
-  const installed = installedRows.map(row => serverProfile(req, row));
-  const installable = (req.user.guilds || [])
-    .filter(guild => req.user.roleAdminGuilds?.includes(guild.id) && !installedIds.has(guild.id))
-    .map(guild => ({ id:guild.id, name:guild.name, iconUrl:iconUrl(guild), accent:accentFor(guild.id), botInstalled:false, capabilities:{ canManage:false, isOwner:Boolean(guild.owner), canInstall:true } }));
-  res.json({ installed, installable });
+router.get('/', async (req, res, next) => {
+  try {
+    const candidates = db.prepare('SELECT * FROM servers WHERE bot_present=1 ORDER BY COALESCE(name, guild_id)').all()
+      .filter(row => req.user.guildIds?.includes(row.guild_id));
+    await Promise.all(candidates.map(row => attachGuildAccess(req, row.guild_id)));
+    const installedRows = candidates.filter(row => hasGuildAccess(req, row.guild_id));
+    const installedIds = new Set(installedRows.map(row => row.guild_id));
+    const installed = installedRows.map(row => serverProfile(req, row));
+    const installable = (req.user.guilds || [])
+      .filter(guild => req.user.roleAdminGuilds?.includes(guild.id) && !installedIds.has(guild.id))
+      .map(guild => ({ id:guild.id, name:guild.name, iconUrl:iconUrl(guild), accent:accentFor(guild.id), botDisplayName:'ClipThat', botInstalled:false, capabilities:{ canManage:false, isOwner:Boolean(guild.owner), canInstall:true } }));
+    res.json({ installed, installable });
+  } catch (error) { next(error); }
 });
 
 router.get('/:guildId/overview', (req, res) => {
   const guildId = req.params.guildId;
   if (!hasGuildAccess(req, guildId)) return res.status(403).json({ error: 'Server access denied.' });
   const row = db.prepare('SELECT * FROM servers WHERE guild_id=? AND bot_present=1').get(guildId);
-  if (!row) return res.status(404).json({ error: 'Clip Vault is not installed in this server.' });
+  if (!row) return res.status(404).json({ error: 'The bot is not installed in this server.' });
   const profile = serverProfile(req, row);
   const now = Date.now();
   const rawRuntime = db.prepare('SELECT * FROM server_runtime WHERE guild_id=?').get(guildId);
@@ -93,7 +100,7 @@ router.get('/:guildId/export', (req, res) => {
   const clips = db.prepare('SELECT id,title,duration,users_involved,created_by,created_at,expires_at,favorited,deleted_at,deletion_reason,storage_bytes FROM clips WHERE guild_id=? ORDER BY created_at').all(guildId)
     .map(clip => ({ ...clip, users_involved:parseJson(clip.users_involved), revisions:db.prepare('SELECT id,revision_number,start_trim,end_trim,created_by,created_at FROM clip_revisions WHERE clip_id=? ORDER BY revision_number').all(clip.id) }));
   const payload = { exportedAt:new Date().toISOString(), server, clips, recordingPreferences:db.prepare('SELECT user_id,recording_allowed,updated_at FROM recording_preferences WHERE guild_id=?').all(guildId), activity:db.prepare('SELECT clip_id,actor_id,action,details,created_at FROM clip_activity WHERE guild_id=? ORDER BY created_at').all(guildId) };
-  res.set('Content-Disposition', `attachment; filename="clip-vault-${guildId}-export.json"`);
+  res.set('Content-Disposition', `attachment; filename="clipthat-${guildId}-export.json"`);
   res.type('application/json').send(JSON.stringify(payload, null, 2));
 });
 

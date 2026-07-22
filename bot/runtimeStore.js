@@ -2,11 +2,13 @@ const db = require('../api/db');
 
 function syncGuild(guild, botPresent = true) {
   const now = Date.now();
-  db.prepare(`INSERT INTO servers(guild_id,name,icon_hash,owner_id,bot_present,profile_updated_at,created_at)
-    VALUES(?,?,?,?,?,?,?) ON CONFLICT(guild_id) DO UPDATE SET
+  const botDisplayName = guild.members?.me?.nickname || 'ClipThat';
+  db.prepare(`INSERT INTO servers(guild_id,name,icon_hash,owner_id,bot_present,profile_updated_at,created_at,bot_display_name)
+    VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(guild_id) DO UPDATE SET
     name=excluded.name, icon_hash=excluded.icon_hash, owner_id=excluded.owner_id,
-    bot_present=excluded.bot_present, profile_updated_at=excluded.profile_updated_at`)
-    .run(guild.id, guild.name, guild.icon || null, guild.ownerId || null, botPresent ? 1 : 0, now, now);
+    bot_present=excluded.bot_present, profile_updated_at=excluded.profile_updated_at,
+    bot_display_name=excluded.bot_display_name`)
+    .run(guild.id, guild.name, guild.icon || null, guild.ownerId || null, botPresent ? 1 : 0, now, now, botDisplayName);
 }
 
 function reconcileGuilds(guilds) {

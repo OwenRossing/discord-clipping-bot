@@ -2,9 +2,11 @@ const express = require('express');
 const db = require('../db');
 const { requireAuth, isPlatformAdmin } = require('../middleware/auth');
 const { guildUsage } = require('../storage');
+const { attachGuildAccess } = require('../guildAccess');
 
 const router = express.Router();
 router.use(requireAuth);
+router.param('guild', (req, res, next, guildId) => { attachGuildAccess(req, guildId).then(() => next(), next); });
 
 function allowed(req, guildId) { return isPlatformAdmin(req, guildId); }
 function response(row) {

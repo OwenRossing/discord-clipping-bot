@@ -6,10 +6,31 @@ const { loadConfig } = require('../bot/utils');
 const config = loadConfig();
 const clipsRoot = path.resolve(process.cwd(), config.storage.clipsDir);
 const previewRoot = path.resolve(process.cwd(), path.dirname(config.storage.clipsDir), 'previews');
+fs.mkdirSync(clipsRoot, { recursive:true });
+fs.mkdirSync(previewRoot, { recursive:true });
+
+function canonical(value) {
+  const resolved = path.resolve(value);
+  if (fs.existsSync(resolved)) return fs.realpathSync.native(resolved);
+  let ancestor = path.dirname(resolved);
+  while (!fs.existsSync(ancestor)) {
+    const parent = path.dirname(ancestor);
+    if (parent === ancestor) break;
+    ancestor = parent;
+  }
+  return fs.realpathSync.native(ancestor);
+}
 
 function inside(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  if (!root || !candidate) return false;
+  const rootPath = path.resolve(root), candidatePath = path.resolve(candidate);
+  const relative = path.relative(rootPath, candidatePath);
+  if (relative !== '' && (relative.startsWith('..') || path.isAbsolute(relative))) return false;
+  try {
+    const realRoot = canonical(rootPath), realCandidate = canonical(candidatePath);
+    const realRelative = path.relative(realRoot, realCandidate);
+    return realRelative === '' || (!realRelative.startsWith('..') && !path.isAbsolute(realRelative));
+  } catch { return false; }
 }
 
 function directoryBytes(directory) {
@@ -17,6 +38,7 @@ function directoryBytes(directory) {
   try {
     return fs.readdirSync(directory, { withFileTypes:true }).reduce((total, entry) => {
       const candidate = path.join(directory, entry.name);
+      if (entry.isSymbolicLink() || !inside(clipsRoot, candidate)) return total;
       return total + (entry.isDirectory() ? directoryBytes(candidate) : fs.statSync(candidate).size);
     }, 0);
   } catch { return 0; }
@@ -34,7 +56,7 @@ function serverQuota(guildId) {
 function assertQuota(guildId, additionalBytes = 0) {
   const usage = guildUsage(guildId), quota = serverQuota(guildId);
   if (usage + Math.max(0, Number(additionalBytes) || 0) > quota) {
-    const error = new Error('This server has reached its Clip Vault storage limit. Delete clips or shorten retention before creating more.');
+    const error = new Error('This server has reached its clip storage limit. Delete clips or shorten retention before creating more.');
     error.code = 'STORAGE_QUOTA'; error.status = 507;
     throw error;
   }

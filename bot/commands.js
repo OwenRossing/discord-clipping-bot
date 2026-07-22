@@ -19,10 +19,10 @@ const commands = [
   new SlashCommandBuilder().setName('clips').setDescription("Browse this server's clip library")
     .addSubcommand(command => command.setName('recent').setDescription('Show recent clips'))
     .addSubcommand(command => command.setName('list').setDescription('Legacy alias for /clips recent'))
-    .addSubcommand(command => command.setName('open').setDescription('Open a clip in Clip Vault').addStringOption(option => option.setName('clip').setDescription('Search by clip title').setRequired(true).setAutocomplete(true)))
+    .addSubcommand(command => command.setName('open').setDescription('Open a clip in the web dashboard').addStringOption(option => option.setName('clip').setDescription('Search by clip title').setRequired(true).setAutocomplete(true)))
     .addSubcommand(command => command.setName('edit').setDescription('Legacy alias for /clips open').addStringOption(option => option.setName('id').setDescription('Clip ID').setRequired(true))),
   new SlashCommandBuilder().setName('settings').setDescription('View recording settings and open server management'),
-  new SlashCommandBuilder().setName('privacy').setDescription('Control whether Clip Vault may include your voice')
+  new SlashCommandBuilder().setName('privacy').setDescription('Control whether the bot may include your voice')
     .addSubcommand(command => command.setName('status').setDescription('Show your recording preference in this server'))
     .addSubcommand(command => command.setName('allow').setDescription('Allow your voice to be included in future clips'))
     .addSubcommand(command => command.setName('block').setDescription('Exclude your voice from future clips and clear the current buffer'))

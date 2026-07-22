@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const path = require('path');
 const express = require('express');
 const session = require('express-session');
@@ -13,12 +14,17 @@ if (process.env.NODE_ENV === 'production') {
   if (config.development.enabled) throw new Error('Development login cannot be enabled in production.');
 }
 app.disable('x-powered-by');
-app.use(express.json({ limit: '128kb', strict: true }));
 if (process.env.NODE_ENV === 'production' && String(process.env.SESSION_SECRET || '').length < 32) throw new Error('SESSION_SECRET must contain at least 32 characters in production.');
-app.set('trust proxy', 1);
+const trustProxy = String(process.env.TRUST_PROXY || 'false').toLowerCase();
+if (trustProxy === 'loopback') app.set('trust proxy', 'loopback');
+else if (trustProxy !== 'false') throw new Error('TRUST_PROXY must be either false or loopback.');
 const sessionStore = new SQLiteSessionStore(db);
 sessionStore.cleanup();
 app.use((req, res, next) => {
+  req.id = crypto.randomUUID();
+  res.setHeader('X-Request-Id', req.id);
+  const originalJson = res.json.bind(res);
+  res.json = body => originalJson(body && typeof body === 'object' && body.error && !body.requestId ? { ...body, requestId:req.id } : body);
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'same-origin');
@@ -27,8 +33,13 @@ app.use((req, res, next) => {
   if (process.env.NODE_ENV === 'production') res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   next();
 });
-app.use(session({ store: sessionStore, name: process.env.NODE_ENV === 'production' ? '__Host-clipvault.sid' : 'clipvault.sid', secret: process.env.SESSION_SECRET || 'development-only-secret', resave: false, saveUninitialized: false, cookie: { secure: process.env.NODE_ENV === 'production', httpOnly: true, sameSite: 'lax', path: '/', maxAge: 7 * 86400000 } }));
+app.use(express.json({ limit: '128kb', strict: true }));
+app.use(session({ store: sessionStore, name: process.env.NODE_ENV === 'production' ? '__Host-clipthat.sid' : 'clipthat.sid', secret: process.env.SESSION_SECRET || 'development-only-secret', resave: false, saveUninitialized: false, cookie: { secure: process.env.NODE_ENV === 'production', httpOnly: true, sameSite: 'lax', path: '/', maxAge: 7 * 86400000 } }));
 app.use('/api', (req, res, next) => { res.setHeader('Cache-Control', 'private, no-store'); next(); });
+app.use('/api', (req, res, next) => {
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) && !req.is('application/json')) return res.status(415).json({ error:'State-changing API requests must use application/json.', code:'JSON_REQUIRED' });
+  next();
+});
 app.use('/api', csrfProtection);
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/clips', require('./routes/clips'));
@@ -39,9 +50,8 @@ app.use('/api/servers', require('./routes/servers'));
 app.get('/api/health', (req, res) => {
   try {
     db.prepare('SELECT 1').get();
-    const schemaVersion = db.prepare('SELECT MAX(version) version FROM schema_migrations').get().version;
-    res.json({ ok:true, mode:process.env.NODE_ENV || 'development', database:true, schemaVersion:Number(schemaVersion || 0), uptimeSeconds:Math.round(process.uptime()) });
-  } catch (error) { res.status(503).json({ ok:false, database:false }); }
+    res.json({ ok:true });
+  } catch (error) { res.status(503).json({ ok:false }); }
 });
 app.get('/editor.html', (req, res) => res.redirect(302, req.query.clip_id ? `/clips/${encodeURIComponent(req.query.clip_id)}` : '/'));
 app.get('/admin.html', (req, res) => res.redirect(302, req.query.guild ? `/servers/${encodeURIComponent(req.query.guild)}/manage` : '/'));
@@ -52,11 +62,14 @@ app.use((error, req, res, next) => {
   const status = Number(error.status) || (error.type === 'entity.too.large' ? 413 : 500);
   res.status(status).json({ error: status >= 500 ? 'Internal server error.' : error.message, code: error.code });
 });
-if (require.main === module) {
+function startServer(runtimeConfig = config) {
   const cleanupTimer = setInterval(() => sessionStore.cleanup(), 60 * 60 * 1000);
   cleanupTimer.unref();
-  const server = app.listen(config.api.port, config.api.host || '127.0.0.1', () => log(`Dashboard and API listening at ${config.api.baseUrl}`));
+  const server = app.listen(runtimeConfig.api.port, runtimeConfig.api.host || '127.0.0.1', () => log(`Dashboard and API listening at ${runtimeConfig.api.baseUrl}`));
   const shutdown = signal => { log(`${signal} received; closing the API.`); server.close(error => { if (error) { log(error.message); process.exitCode = 1; } }); };
   process.once('SIGINT', () => shutdown('SIGINT')); process.once('SIGTERM', () => shutdown('SIGTERM'));
+  return server;
 }
+if (require.main === module) startServer();
 module.exports = app;
+module.exports.startServer = startServer;

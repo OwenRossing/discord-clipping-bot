@@ -27,10 +27,12 @@ function requestOrigin(req) {
 function allowedOrigins(req) {
   const values = new Set();
   try { values.add(new URL(config.api.baseUrl).origin); } catch {}
-  const forwardedProto = String(req.get('X-Forwarded-Proto') || '').split(',')[0].trim();
-  const protocol = forwardedProto || req.protocol;
-  const host = req.get('X-Forwarded-Host') || req.get('Host');
-  if (host) values.add(`${protocol}://${host}`);
+  if (process.env.NODE_ENV !== 'production') {
+    try {
+      const local = new URL(`http://${req.get('Host') || ''}`);
+      if (['localhost', '127.0.0.1', '[::1]'].includes(local.hostname)) values.add(local.origin);
+    } catch {}
+  }
   return values;
 }
 

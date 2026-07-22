@@ -1,17 +1,6 @@
-const fs = require('fs');
-const path = require('path');
 const db = require('../api/db');
-const { loadConfig } = require('../bot/utils');
-
-const config = loadConfig();
-const clipsRoot = path.resolve(process.cwd(), config.storage.clipsDir);
-const previewRoot = path.resolve(process.cwd(), path.dirname(config.storage.clipsDir), 'previews');
+const { clipsRoot, previewRoot, inside, removeClipDirectory, removePreviewFile } = require('../api/storage');
 const TRASH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-
-function inside(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-}
 
 function cleanup(now = Date.now()) {
   const expired = db.prepare(`SELECT * FROM clips
@@ -31,7 +20,7 @@ function cleanup(now = Date.now()) {
   for (const preview of previews) {
     let removed = true;
     if (inside(previewRoot, preview.audio_path)) {
-      try { fs.unlinkSync(preview.audio_path); } catch (error) { if (error.code !== 'ENOENT') { removed = false; console.error(JSON.stringify({ event: 'preview_cleanup_failed', token: preview.token, error: error.message })); } }
+      try { removePreviewFile(preview.audio_path); } catch (error) { if (error.code !== 'ENOENT') { removed = false; console.error(JSON.stringify({ event: 'preview_cleanup_failed', token: preview.token, error: error.message })); } }
     }
     if (removed) db.prepare('DELETE FROM clip_previews WHERE token=?').run(preview.token);
   }
@@ -47,10 +36,10 @@ function cleanup(now = Date.now()) {
       const clipPreviews = db.prepare('SELECT * FROM clip_previews WHERE clip_id=?').all(clip.id);
       for (const preview of clipPreviews) {
         if (inside(previewRoot, preview.audio_path)) {
-          try { fs.unlinkSync(preview.audio_path); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+          try { removePreviewFile(preview.audio_path); } catch (error) { if (error.code !== 'ENOENT') throw error; }
         }
       }
-      fs.rmSync(clip.original_audio_path, { recursive: true, force: true });
+      removeClipDirectory(clip.original_audio_path);
       db.transaction(() => {
         activity.run(clip.id, clip.guild_id, 'permanent_cleanup', JSON.stringify({ reason: clip.deletion_reason }), now);
         db.prepare('DELETE FROM clip_previews WHERE clip_id=?').run(clip.id);
