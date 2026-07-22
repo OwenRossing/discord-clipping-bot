@@ -7,6 +7,20 @@ const { guildUsage } = require('../storage');
 const router = express.Router();
 router.use(requireAuth, requirePlatformOwner);
 
+const PLAN_DEFAULTS = Object.freeze({
+  free:Object.freeze({ storageQuotaBytes:15 * 1024 ** 3, maxClipSeconds:120, maxRetentionDays:90, maxBufferMinutes:15 }),
+  premium:Object.freeze({ storageQuotaBytes:1024 ** 4, maxClipSeconds:1800, maxRetentionDays:3650, maxBufferMinutes:30 })
+});
+
+function publicPlanDefaults() {
+  return Object.fromEntries(Object.entries(PLAN_DEFAULTS).map(([plan, values]) => [plan, {
+    storage_quota_bytes:values.storageQuotaBytes,
+    max_clip_seconds:values.maxClipSeconds,
+    max_retention_days:values.maxRetentionDays,
+    max_buffer_minutes:values.maxBufferMinutes
+  }]));
+}
+
 function integer(value, minimum, maximum, label) {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
@@ -42,7 +56,7 @@ router.get('/servers', (req, res) => {
     LEFT JOIN clips ON clips.guild_id=servers.guild_id
     WHERE (?='' OR servers.guild_id LIKE ? OR COALESCE(servers.name,'') LIKE ?)
     GROUP BY servers.guild_id ORDER BY COALESCE(servers.name,servers.guild_id) LIMIT 200`).all(search, pattern, pattern);
-  res.json({ servers:rows.map(serializeServer) });
+  res.json({ servers:rows.map(serializeServer), plan_defaults:publicPlanDefaults() });
 });
 
 router.patch('/servers/:guildId', (req, res, next) => {
@@ -52,12 +66,14 @@ router.patch('/servers/:guildId', (req, res, next) => {
     const body = req.body || {};
     const plan = ['free', 'premium'].includes(body.plan) ? body.plan : null;
     if (!plan) return res.status(400).json({ error:'Plan must be free or premium.', code:'INVALID_PLAN' });
+    const defaults = PLAN_DEFAULTS[plan];
+    const planChanged = plan !== (server.plan || 'free');
     const nextValues = {
       plan,
-      storageQuotaBytes:integer(body.storage_quota_bytes, 1_048_576, 10_995_116_277_760, 'Storage quota'),
-      maxClipSeconds:integer(body.max_clip_seconds, 5, 1800, 'Maximum clip duration'),
-      maxRetentionDays:integer(body.max_retention_days, 1, 3650, 'Maximum retention'),
-      maxBufferMinutes:integer(body.max_buffer_minutes, 5, 30, 'Maximum buffer length'),
+      storageQuotaBytes:planChanged ? defaults.storageQuotaBytes : integer(body.storage_quota_bytes, 1_048_576, 10_995_116_277_760, 'Storage quota'),
+      maxClipSeconds:planChanged ? defaults.maxClipSeconds : integer(body.max_clip_seconds, 5, 1800, 'Maximum clip duration'),
+      maxRetentionDays:planChanged ? defaults.maxRetentionDays : integer(body.max_retention_days, 1, 3650, 'Maximum retention'),
+      maxBufferMinutes:planChanged ? defaults.maxBufferMinutes : integer(body.max_buffer_minutes, 5, 30, 'Maximum buffer length'),
       suspended:Boolean(body.suspended),
       suspensionReason:String(body.suspension_reason || '').trim().slice(0, 500)
     };
@@ -90,3 +106,4 @@ router.get('/activity', (req, res) => {
 });
 
 module.exports = router;
+module.exports.PLAN_DEFAULTS = PLAN_DEFAULTS;

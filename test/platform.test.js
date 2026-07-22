@@ -97,7 +97,7 @@ test('edit validation rejects bad trims, volumes, and a fully muted mix', () => 
   assert.throws(() => clipsRouter.validateEdit(clip, { user_mutes:{ one:true, two:true } }), /remain unmuted/);
 });
 
-test('authenticated rename, trash, and admin restore endpoints record activity', async () => {
+test('authenticated rename, trash, restore, and permanent-delete endpoints manage clip lifecycle', async () => {
   const now = Date.now(), clipDir = path.join(testRoot, 'clips', 'guild', 'api-clip');
   fs.mkdirSync(clipDir, { recursive:true });
   db.prepare(`INSERT INTO clips(id,guild_id,timestamp,duration,users_involved,created_by,original_audio_path,start_trim,end_trim,user_mutes,user_volumes,created_at,expires_at,favorited,title)
@@ -113,11 +113,18 @@ test('authenticated rename, trash, and admin restore endpoints record activity',
     const request = (url, options = {}) => fetch(`${base}${url}`, { ...options, headers:{ Cookie:cookie, Origin:base, ...(!['GET','HEAD'].includes(options.method || 'GET') ? { 'X-CSRF-Token':csrfToken } : {}), ...(options.body ? { 'Content-Type':'application/json' } : {}), ...(options.headers || {}) } });
     const rename = await request('/api/clips/api-clip', { method:'PATCH', body:JSON.stringify({ title:'  🎧 Endpoint title  ' }) });
     assert.equal(rename.status, 200); assert.equal((await rename.json()).title, '🎧 Endpoint title');
+    const activeDelete = await request('/api/clips/api-clip/permanent', { method:'DELETE', body:'{}' });
+    assert.equal(activeDelete.status, 409); assert.equal((await activeDelete.json()).code, 'CLIP_NOT_TRASHED');
     const trashed = await request('/api/clips/api-clip', { method:'DELETE', body:JSON.stringify({ reason:'test' }) });
     assert.equal(trashed.status, 202); assert.ok((await trashed.json()).deleted_at);
     const restored = await request('/api/clips/api-clip/restore', { method:'POST', body:'{}' });
     assert.equal(restored.status, 200); assert.equal((await restored.json()).deleted_at, null);
     assert.deepEqual(db.prepare("SELECT action FROM clip_activity WHERE clip_id='api-clip' ORDER BY id").all().map(row => row.action), ['rename', 'trash', 'restore']);
+    assert.equal((await request('/api/clips/api-clip', { method:'DELETE', body:JSON.stringify({ reason:'test-purge' }) })).status, 202);
+    const permanent = await request('/api/clips/api-clip/permanent', { method:'DELETE', body:'{}' });
+    assert.equal(permanent.status, 204);
+    assert.equal(db.prepare("SELECT 1 FROM clips WHERE id='api-clip'").get(), undefined);
+    assert.equal(fs.existsSync(clipDir), false);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
@@ -181,7 +188,10 @@ test('platform controls require an environment owner and audit premium, limit, a
     process.env.PLATFORM_OWNER_IDS = process.env.DEV_USER_ID;
     const listed = await fetch(`${base}/api/platform/servers`, { headers:{ Cookie:cookie } });
     assert.equal(listed.status, 200);
-    assert.ok((await listed.json()).servers.some(item => item.guild_id === 'guild'));
+    const listedBody = await listed.json();
+    assert.ok(listedBody.servers.some(item => item.guild_id === 'guild'));
+    assert.equal(listedBody.plan_defaults.free.storage_quota_bytes, 15 * 1024 ** 3);
+    assert.equal(listedBody.plan_defaults.premium.storage_quota_bytes, 1024 ** 4);
 
     const headers = { Cookie:cookie, Origin:base, 'Content-Type':'application/json', 'X-CSRF-Token':csrfToken };
     const missingReason = await fetch(`${base}/api/platform/servers/guild`, { method:'PATCH', headers, body:JSON.stringify({ plan:'premium', storage_quota_bytes:2097152, max_clip_seconds:120, max_retention_days:365, max_buffer_minutes:20, suspended:true }) });
@@ -189,12 +199,20 @@ test('platform controls require an environment owner and audit premium, limit, a
     const updated = await fetch(`${base}/api/platform/servers/guild`, { method:'PATCH', headers, body:JSON.stringify({ plan:'premium', storage_quota_bytes:2097152, max_clip_seconds:120, max_retention_days:365, max_buffer_minutes:20, suspended:true, suspension_reason:'Manual review' }) });
     assert.equal(updated.status, 200);
     const body = (await updated.json()).server;
-    assert.equal(body.plan, 'premium'); assert.equal(body.suspended, true); assert.equal(body.max_clip_seconds, 120);
+    assert.equal(body.plan, 'premium'); assert.equal(body.suspended, true); assert.equal(body.max_clip_seconds, 1800);
+    assert.equal(body.storage_quota_bytes, 1024 ** 4); assert.equal(body.max_retention_days, 3650); assert.equal(body.max_buffer_minutes, 30);
+
+    const customized = await fetch(`${base}/api/platform/servers/guild`, { method:'PATCH', headers, body:JSON.stringify({ plan:'premium', storage_quota_bytes:2097152, max_clip_seconds:120, max_retention_days:365, max_buffer_minutes:20, suspended:true, suspension_reason:'Manual review' }) });
+    assert.equal(customized.status, 200);
+    const customBody = (await customized.json()).server;
+    assert.equal(customBody.storage_quota_bytes, 2097152); assert.equal(customBody.max_clip_seconds, 120); assert.equal(customBody.max_retention_days, 365); assert.equal(customBody.max_buffer_minutes, 20);
     assert.equal(db.prepare("SELECT buffer_size_minutes FROM servers WHERE guild_id='guild'").get().buffer_size_minutes, 20);
     assert.equal(db.prepare("SELECT COUNT(*) count FROM platform_activity WHERE guild_id='guild'").get().count > 0, true);
 
     const restored = await fetch(`${base}/api/platform/servers/guild`, { method:'PATCH', headers, body:JSON.stringify({ plan:'free', storage_quota_bytes:1073741824, max_clip_seconds:1800, max_retention_days:3650, max_buffer_minutes:30, suspended:false, suspension_reason:'' }) });
     assert.equal(restored.status, 200);
+    const freeBody = (await restored.json()).server;
+    assert.equal(freeBody.storage_quota_bytes, 15 * 1024 ** 3); assert.equal(freeBody.max_clip_seconds, 120); assert.equal(freeBody.max_retention_days, 90); assert.equal(freeBody.max_buffer_minutes, 15);
   } finally {
     if (previousOwners == null) delete process.env.PLATFORM_OWNER_IDS; else process.env.PLATFORM_OWNER_IDS = previousOwners;
     await new Promise(resolve => server.close(resolve));

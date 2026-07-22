@@ -1,14 +1,16 @@
 import { apiFetch, setCsrfToken } from '/api.js';
 import { clipCard, escapeHtml, formatBytes, formatDuration, iconMarkup, relativeTime, skeleton } from '/ui.js';
+import { svgIcon } from '/icons.js';
 
 const state = {
   me: null, mode: null, servers: { installed: [], installable: [] }, server: null,
   overview: null, clips: [], cursor: null, total: 0, trash: false, search: '',
   audioClip: null, searchTimer: null, requestId: 0, routeController: null, libraryController: null,
-  editor: null, textResolve:null, confirmResolve:null
+  editor: null, textResolve:null, confirmResolve:null, platformDefaults:null
 };
-const elements = Object.fromEntries(['welcome','appShell','serverRail','openServerPicker','mobileServerPicker','desktopNav','mobileNav','view','theme','accountButton','accountDialog','accountContent','serverDialog','serverChoices','renameDialog','renameForm','renameTitle','renameLabel','renameInput','renameSubmit','confirmDialog','confirmTitle','confirmMessage','confirmButton','player','playerToggle','playerTitle','playerServer','playerSeek','playerTime','playerClose','persistentAudio','toastRegion'].map(id => [id, document.getElementById(id)]));
+const elements = Object.fromEntries(['welcome','appShell','serverRail','openServerPicker','desktopNav','mobileNav','workspaceContext','workspaceStatus','view','accountButton','accountDialog','accountContent','serverDialog','serverChoices','renameDialog','renameForm','renameTitle','renameLabel','renameInput','renameSubmit','confirmDialog','confirmTitle','confirmMessage','confirmButton','player','playerToggle','playerTitle','playerServer','playerSeek','playerTime','playerClose','persistentAudio','toastRegion'].map(id => [id, document.getElementById(id)]));
 const navItems = [{ key:'home', label:'Home' }, { key:'library', label:'Library' }, { key:'favorites', label:'Favorites' }, { key:'manage', label:'Manage', admin:true }];
+document.querySelectorAll('[data-icon]').forEach(node => { node.innerHTML = svgIcon(node.dataset.icon); });
 
 function toast(message, kind = '') {
   const node = document.createElement('div');
@@ -41,6 +43,18 @@ function brandInitials(name = brandName()) { return name.split(/\s+/).slice(0, 2
 function setBrand(server = state.server) {
   const name = brandName(server);
   document.title = server ? `${name} · ${server.name}` : name;
+}
+function renderWorkspaceContext() {
+  const target = route();
+  if (target.type === 'platform') {
+    elements.workspaceContext.hidden = false;
+    elements.workspaceContext.innerHTML = '<span>ClipThat</span><strong>Platform</strong>';
+    return;
+  }
+  if (!state.server) { elements.workspaceContext.hidden = true; return; }
+  const label = target.type === 'clip' ? 'Clip' : ({ home:'Home', library:state.trash ? 'Trash' : 'Library', favorites:'Favorites', manage:'Manage' }[target.view] || 'Home');
+  elements.workspaceContext.hidden = false;
+  elements.workspaceContext.innerHTML = `<span>${escapeHtml(state.server.name)}</span><strong>${escapeHtml(label)}</strong>`;
 }
 
 async function withButton(button, label, task) {
@@ -85,17 +99,19 @@ function renderShell() {
   elements.serverRail.innerHTML = state.servers.installed.map(server => { const active = server.id === state.server?.id; return `<a href="/servers/${encodeURIComponent(server.id)}/home" data-route class="server-button ${active ? 'active' : ''}" ${active ? 'aria-current="page"' : ''} aria-label="${escapeHtml(server.name)}" title="${escapeHtml(server.name)}">${iconMarkup(server)}${active ? '<i class="active-server-dot" aria-hidden="true"></i>' : ''}</a>`; }).join('');
   elements.accountButton.innerHTML = avatar(state.me);
   setBrand(state.server);
-  if (!state.server) return;
+  renderWorkspaceContext();
+  if (!state.server && route().type !== 'platform') { elements.workspaceStatus.hidden = true; return; }
+  if (route().type === 'platform') { renderHeaderStatus(); return; }
   setAccent(state.server);
-  elements.mobileServerPicker.innerHTML = `${iconMarkup(state.server)}<span><small>${escapeHtml(brandName())}</small><strong>${escapeHtml(state.server.name)}</strong></span><b aria-hidden="true">&#8964;</b>`;
   const current = route().view || (route().type === 'clip' ? '' : 'home');
   const allowed = navItems.filter(item => !item.admin || state.server.capabilities.canManage);
   const markup = allowed.map(item => { const active = current === item.key; return `<a href="${navUrl(item.key)}" data-route class="${active ? 'active' : ''}" ${active ? 'aria-current="page"' : ''}>${escapeHtml(item.label)}</a>`; }).join('');
   elements.desktopNav.innerHTML = markup; elements.mobileNav.innerHTML = markup;
+  renderHeaderStatus();
 }
 
 function serverPicker() {
-  const installed = state.servers.installed.map(server => { const active = server.id === state.server?.id; return `<a class="server-choice ${active ? 'active' : ''}" href="/servers/${encodeURIComponent(server.id)}/home" data-route ${active ? 'aria-current="page"' : ''}>${iconMarkup(server)}<span><strong>${escapeHtml(server.name)}</strong><small>${active ? 'Current server' : 'Open library'}</small></span>${active ? '<b aria-hidden="true">✓</b>' : ''}</a>`; }).join('');
+  const installed = state.servers.installed.map(server => { const active = server.id === state.server?.id; return `<a class="server-choice ${active ? 'active' : ''}" href="/servers/${encodeURIComponent(server.id)}/home" data-route ${active ? 'aria-current="page"' : ''}>${iconMarkup(server)}<span><strong>${escapeHtml(server.name)}</strong><small>${active ? 'Current server' : 'Open library'}</small></span>${active ? `<b aria-hidden="true">${svgIcon('check')}</b>` : ''}</a>`; }).join('');
   const installable = state.servers.installable.map(server => `<button class="server-choice" type="button" data-install="${escapeHtml(server.id)}">${iconMarkup(server)}<span><strong>${escapeHtml(server.name)}</strong><small>Add ClipThat</small></span></button>`).join('');
   elements.serverChoices.innerHTML = `<h3>Installed</h3>${installed || '<p class="empty-copy">No installed servers yet.</p>'}${installable ? `<h3>Available to add</h3>${installable}` : ''}`;
   elements.serverDialog.showModal();
@@ -120,7 +136,7 @@ async function waitForInstall(guildId, button) {
 }
 
 function accountDialog() {
-  elements.accountContent.innerHTML = `<div class="account-card">${avatar(state.me)}<div><strong>${escapeHtml(state.me.username)}</strong><small>${state.me.development ? 'Local development session' : 'Discord session'}</small></div></div>${state.me.platformOwner ? '<a class="account-platform-link" href="/platform" data-route>Platform controls <span>&rarr;</span></a>' : ''}<div class="policy-links"><a href="/privacy.html">Privacy</a><a href="/terms.html">Terms</a></div><button class="button secondary full" data-action="logout" type="button">Sign out</button>`;
+  elements.accountContent.innerHTML = `<div class="account-card">${avatar(state.me)}<div><strong>${escapeHtml(state.me.username)}</strong><small>${state.me.development ? 'Local development session' : 'Discord session'}</small></div></div>${state.me.platformOwner ? `<a class="account-platform-link" href="/platform" data-route>Platform controls <span>${svgIcon('arrowRight')}</span></a>` : ''}<div class="policy-links"><a href="/privacy.html">Privacy</a><a href="/terms.html">Terms</a></div><button class="button secondary full" data-action="logout" type="button">Sign out</button>`;
   elements.accountDialog.showModal();
 }
 
@@ -131,20 +147,32 @@ function statusMarkup(overview) {
   const label = runtime.connected ? `Recording ${runtime.voiceChannelName || 'voice'}` : runtime.online ? 'Bot online' : 'Bot offline';
   return `<div class="status-pill ${tone}"><i></i><span><strong>${escapeHtml(label)}</strong><small>${runtime.connected ? `${runtime.speakerCount} active speaker${runtime.speakerCount === 1 ? '' : 's'}` : 'Live recorder status'}</small></span></div>`;
 }
+function renderHeaderStatus() {
+  if (!state.server || route().type === 'platform') { elements.workspaceStatus.hidden = true; return; }
+  elements.workspaceStatus.hidden = false;
+  elements.workspaceStatus.innerHTML = state.overview?.server?.id === state.server.id
+    ? statusMarkup(state.overview)
+    : '<div class="status-pill checking"><i></i><span><strong>Checking bot</strong><small>Live status</small></span></div>';
+}
+async function refreshOverview() {
+  state.overview = await routeFetch(`/api/servers/${encodeURIComponent(state.server.id)}/overview`);
+  renderHeaderStatus();
+  return state.overview;
+}
 function shelf(title, clips, empty) {
   return `<section class="shelf"><div class="section-heading"><h2>${escapeHtml(title)}</h2></div>${clips.length ? `<div class="clip-grid">${clips.map(clip => clipCard(clip)).join('')}</div>` : `<div class="empty-panel"><p>${escapeHtml(empty)}</p></div>`}</section>`;
 }
 
 async function renderHome() {
   elements.view.innerHTML = skeleton(4);
-  const overview = await routeFetch(`/api/servers/${encodeURIComponent(state.server.id)}/overview`); state.overview = overview;
-  const checklist = state.server.capabilities.canManage && !overview.setup.complete ? `<aside class="setup-card"><div><p class="eyebrow">ADMIN CHECKLIST</p><h2>Finish setting up this vault</h2></div><ul><li class="${overview.setup.botOnline ? 'done' : ''}">Bot connected</li><li class="${overview.setup.clipsChannelConfigured ? 'done' : ''}">Clips channel selected</li><li class="${overview.setup.consentConfigured ? 'done' : ''}">Recording privacy reviewed</li></ul><a class="button secondary" href="${navUrl('manage')}" data-route>Open settings</a></aside>` : '';
-  elements.view.innerHTML = `<section class="server-hero"><div><p class="eyebrow">${escapeHtml(state.server.name.toUpperCase())}</p><h1>Your server's moments.</h1><p>${overview.counts.total} clips saved · ${overview.counts.favorites} favorites</p></div>${statusMarkup(overview)}</section>${checklist}${shelf('Recent moments', overview.recent, 'New clips will appear here as soon as someone uses /clipthat.')}${shelf('Favorites', overview.favorites, 'Favorite the moments your server keeps coming back to.')}<div class="section-link"><a href="${navUrl('library')}" data-route>Browse all ${overview.counts.total} clips <span aria-hidden="true">&rarr;</span></a></div>`;
+  const overview = state.overview || await refreshOverview();
+  const checklist = state.server.capabilities.canManage && !overview.setup.complete ? `<aside class="setup-card"><div><p class="eyebrow">ADMIN CHECKLIST</p><h2>Finish setting up this server</h2></div><ul><li class="${overview.setup.clipsChannelConfigured ? 'done' : ''}">${svgIcon(overview.setup.clipsChannelConfigured ? 'check' : 'circle')}Choose the clips channel</li><li class="${overview.setup.consentConfigured ? 'done' : ''}">${svgIcon(overview.setup.consentConfigured ? 'check' : 'circle')}Review voice consent</li></ul><a class="button secondary" href="${navUrl('manage')}" data-route>Open settings</a></aside>` : '';
+  elements.view.innerHTML = `<section class="page-summary"><p>${overview.counts.total} clips saved <span aria-hidden="true">&middot;</span> ${overview.counts.favorites} favorites</p></section>${checklist}${shelf('Recent moments', overview.recent, 'New clips will appear here as soon as someone uses /clipthat.')}${shelf('Favorites', overview.favorites, 'Favorite the moments your server keeps coming back to.')}<div class="section-link"><a href="${navUrl('library')}" data-route>Browse all ${overview.counts.total} clips <span aria-hidden="true">${svgIcon('arrowRight')}</span></a></div>`;
 }
 
 function libraryHeading(view) {
   const admin = state.server.capabilities.canManage;
-  return `<section class="library-head"><div><p class="eyebrow">${view === 'favorites' ? 'SAVED FOR LATER' : 'YOUR ARCHIVE'}</p><h1>${view === 'favorites' ? 'Favorites' : state.trash ? 'Trash' : 'Library'}</h1><p id="libraryCount" class="muted">${state.total} moments</p></div><label class="search-box"><span aria-hidden="true">&#8981;</span><span class="sr-only">Search clips</span><input id="clipSearch" type="search" value="${escapeHtml(state.search)}" placeholder="Search titles or speakers" autocomplete="off"></label></section>${admin && view === 'library' ? `<div class="segmented" role="tablist"><button class="${!state.trash ? 'active' : ''}" data-action="show-active" role="tab" aria-selected="${!state.trash}" type="button">Active</button><button class="${state.trash ? 'active' : ''}" data-action="show-trash" role="tab" aria-selected="${state.trash}" type="button">Trash</button></div>` : ''}`;
+  return `<section class="library-head"><p id="libraryCount" class="muted">${state.total} moments</p><label class="search-box"><span aria-hidden="true">${svgIcon('search')}</span><span class="sr-only">Search clips</span><input id="clipSearch" type="search" value="${escapeHtml(state.search)}" placeholder="Search titles or speakers" autocomplete="off"></label></section>${admin && view === 'library' ? `<div class="segmented" role="tablist"><button class="${!state.trash ? 'active' : ''}" data-action="show-active" role="tab" aria-selected="${!state.trash}" type="button">Active</button><button class="${state.trash ? 'active' : ''}" data-action="show-trash" role="tab" aria-selected="${state.trash}" type="button">Trash</button></div>` : ''}`;
 }
 async function loadClips(view, reset = false) {
   if (reset) { state.clips = []; state.cursor = null; }
@@ -188,9 +216,11 @@ async function renderEditor(clipId) {
   try { clip = await routeFetch(`/api/clips/${encodeURIComponent(clipId)}/metadata`); }
   catch (error) { if (error.status === 403 || error.status === 404) return accessDenied(); throw error; }
   const server = currentServer(clip.guild_id); if (!server) return accessDenied();
-  state.server = server; localStorage.setItem('clipthat.lastServer', server.id); renderShell();
+  state.server = server; localStorage.setItem('clipthat.lastServer', server.id);
+  if (state.overview?.server?.id !== server.id) state.overview = null;
+  renderShell(); await refreshOverview();
   const form = editState(clip);
-  elements.view.innerHTML = `<a class="back-link" href="${navUrl('library')}" data-route>&larr; Back to library</a><section class="editor-head"><div><p class="eyebrow">CLIP EDITOR</p><div class="editable-title"><h1>${escapeHtml(clip.title)}</h1>${clip.capabilities.canRename ? '<button class="text-action" data-action="rename" type="button">Rename</button>' : ''}</div><p>${escapeHtml(clip.users_involved.map(user => user.name).join(', ') || 'No voices currently included')} · ${formatDuration(clip.duration)} · ${escapeHtml(relativeTime(clip.created_at))}</p></div><button class="button secondary" data-action="play" data-clip-id="${escapeHtml(clip.id)}" type="button">Play clip</button></section>${clip.my_participation?.source_present ? `<section class="participation-row" aria-label="Your voice in this clip"><span class="participation-label ${clip.my_participation.audible ? 'included' : 'excluded'}"><i aria-hidden="true"></i>${clip.my_participation.audible ? 'Voice included' : 'Voice not included'}</span><div class="participation-actions">${clip.my_participation.can_remove ? '<button class="text-action danger-text" data-action="remove-self" type="button">Remove my voice</button>' : ''}${clip.my_participation.can_clone ? '<button class="text-action" data-action="clone-self" type="button">Add in a new cut</button>' : ''}</div></section>` : ''}<section class="editor-card"><div class="editor-status"><div><h2>Mix and timing</h2><p id="dirtyMessage">Saved revision ${clip.current_revision?.revision_number ?? 0}</p></div><span id="dirtyPill" class="saved-pill">Saved</span></div>${clip.capabilities.canEditAudio ? editorForm(clip, form) : '<div class="empty-panel"><p>You can play and rename this clip. Only its creator or a bot admin can change the audio.</p></div>'}<div class="editor-actions">${clip.capabilities.canEditAudio ? '<button class="button secondary" data-action="reset-edit" type="button">Reset</button><button class="button secondary" data-action="preview-edit" type="button">Preview</button><button class="button" data-action="save-edit" type="button">Save revision</button>' : ''}${clip.capabilities.canDelete ? '<button class="button danger-button" data-action="trash" type="button">Move to trash</button>' : ''}${clip.capabilities.canRestore ? '<button class="button" data-action="restore" type="button">Restore clip</button>' : ''}</div></section>${clip.capabilities.canViewRevisions ? '<section class="revision-card"><button class="revision-toggle" data-action="load-revisions" type="button"><span><strong>Revision history</strong><small>Play or restore earlier versions</small></span><b>&darr;</b></button><div id="revisionList"></div></section>' : ''}`;
+  elements.view.innerHTML = `<a class="back-link" href="${navUrl('library')}" data-route>${svgIcon('arrowLeft')} Back to library</a><section class="editor-head"><div><p class="eyebrow">CLIP EDITOR</p><div class="editable-title"><h1>${escapeHtml(clip.title)}</h1>${clip.capabilities.canRename ? '<button class="text-action" data-action="rename" type="button">Rename</button>' : ''}</div><p>${escapeHtml(clip.users_involved.map(user => user.name).join(', ') || 'No voices currently included')} · ${formatDuration(clip.duration)} · ${escapeHtml(relativeTime(clip.created_at))}</p></div><button class="button secondary" data-action="play" data-clip-id="${escapeHtml(clip.id)}" type="button">Play clip</button></section>${clip.my_participation?.source_present ? `<section class="participation-row" aria-label="Your voice in this clip"><span class="participation-label ${clip.my_participation.audible ? 'included' : 'excluded'}"><i aria-hidden="true"></i>${clip.my_participation.audible ? 'Voice included' : 'Voice not included'}</span><div class="participation-actions">${clip.my_participation.can_remove ? '<button class="text-action danger-text" data-action="remove-self" type="button">Remove my voice</button>' : ''}${clip.my_participation.can_clone ? '<button class="text-action" data-action="clone-self" type="button">Add me</button>' : ''}</div></section>` : ''}<section class="editor-card"><div class="editor-status"><div><h2>Mix and timing</h2><p id="dirtyMessage">Saved revision ${clip.current_revision?.revision_number ?? 0}</p></div><span id="dirtyPill" class="saved-pill">Saved</span></div>${clip.capabilities.canEditAudio ? editorForm(clip, form) : '<div class="empty-panel"><p>You can play and rename this clip. Only its creator or a bot admin can change the audio.</p></div>'}<div class="editor-actions">${clip.capabilities.canEditAudio ? '<button class="button secondary" data-action="reset-edit" type="button">Reset</button><button class="button secondary" data-action="preview-edit" type="button">Preview</button><button class="button" data-action="save-edit" type="button">Save revision</button>' : ''}${clip.capabilities.canDelete ? '<button class="button danger-button" data-action="trash" type="button">Move to trash</button>' : ''}${clip.capabilities.canRestore ? '<button class="button" data-action="restore" type="button">Restore clip</button>' : ''}</div></section>${clip.capabilities.canViewRevisions ? `<section class="revision-card"><button class="revision-toggle" data-action="load-revisions" type="button"><span><strong>Revision history</strong><small>Play or restore earlier versions</small></span><b>${svgIcon('chevronDown')}</b></button><div id="revisionList"></div></section>` : ''}`;
   state.editor = { clip, saved:editState(clip), form };
   markDirty();
 }
@@ -220,25 +250,34 @@ async function renderManage() {
   const ownerTools = state.server.capabilities.isOwner ? `<section class="manage-card danger-zone"><div><h2>Server data</h2><p>Export metadata anytime. Permanent deletion removes clips, revisions, preferences, activity, and delegated admins.</p></div><a class="button secondary" href="/api/servers/${encodeURIComponent(state.server.id)}/export" download>Export metadata</a><button class="button danger-button" data-action="erase-server-data" type="button">Permanently erase server data</button></section>` : '';
   const channelNotice = channelsError ? `<p class="inline-error">Channels could not be refreshed: ${escapeHtml(channelsError)}</p>` : '';
   const adminNotice = adminsError ? `<p class="inline-error">Admins could not be refreshed: ${escapeHtml(adminsError)}</p>` : '';
-  elements.view.innerHTML = `<section class="page-heading"><p class="eyebrow">SERVER CONTROL</p><h1>Manage ${escapeHtml(state.server.name)}</h1><p>Recording, retention, privacy, and delegated access in one place.</p></section>${onboarding}<div class="manage-grid"><form id="settingsForm" class="manage-card"><div><h2>Recording settings</h2><p>Changes apply to future clips.</p></div>${channelNotice}<label>Clips channel<select id="clipsChannel"><option value="">Use the default channel</option>${channels.map(channel => `<option value="${escapeHtml(channel.id)}" ${channel.id === settings.clips_channel_id ? 'selected' : ''}>#${escapeHtml(channel.name)}</option>`).join('')}</select></label><label>Voice consent<select id="consentMode"><option value="notice" ${settings.consent_mode === 'notice' ? 'selected' : ''}>Visible notice with opt-out</option><option value="explicit" ${settings.consent_mode === 'explicit' ? 'selected' : ''}>Explicit opt-in only</option></select><small>A notice is posted whenever recording starts. Members can always use /privacy block.</small></label><label>Rolling buffer<select id="bufferMinutes">${[15,20,25,30].map(value => `<option value="${value}" ${value === settings.buffer_size_minutes ? 'selected' : ''}>${value} minutes</option>`).join('')}</select></label><label>Clip retention<input id="retentionDays" type="number" min="1" max="3650" value="${settings.retention_days || 90}"><small>Favorited clips do not expire automatically.</small></label><button class="button" type="submit">${settings.onboarding_completed_at ? 'Save settings' : 'Save and finish setup'}</button></form><section class="manage-card"><div><h2>Storage</h2><p>${formatBytes(settings.storage_used_bytes)} of ${formatBytes(settings.storage_quota_bytes)} used.</p></div><progress class="storage-meter" aria-label="Server storage used" max="100" value="${percent}">${Math.round(percent)}%</progress><small>Old trash is removed after 30 days. Favorited clips remain until deliberately trashed.</small></section>${admins ? `<section class="manage-card"><div><h2>Bot admins</h2><p>Delegated admins do not need a Discord role.</p></div>${adminNotice}<form id="adminForm" class="inline-form"><label><span class="sr-only">Discord user ID</span><input id="adminId" inputmode="numeric" pattern="[0-9]{17,20}" placeholder="Discord user ID" required></label><button class="button" type="submit">Add</button></form><div id="adminList" class="admin-list">${admins.length ? admins.map(admin => `<div><span><strong>${escapeHtml(admin.user_id)}</strong><small>Added ${escapeHtml(relativeTime(admin.created_at))}</small></span><button class="icon-control danger-icon" data-remove-admin="${escapeHtml(admin.user_id)}" type="button" aria-label="Remove admin">&times;</button></div>`).join('') : '<p class="empty-copy">No delegated admins.</p>'}</div></section>` : adminNotice}${ownerTools}</div>`;
+  elements.view.innerHTML = `<section class="page-summary"><p>Recording, retention, privacy, and delegated access in one place.</p></section>${onboarding}<div class="manage-grid"><form id="settingsForm" class="manage-card"><div><h2>Recording settings</h2><p>Changes apply to future clips.</p></div>${channelNotice}<label>Clips channel<select id="clipsChannel"><option value="">Use the default channel</option>${channels.map(channel => `<option value="${escapeHtml(channel.id)}" ${channel.id === settings.clips_channel_id ? 'selected' : ''}>#${escapeHtml(channel.name)}</option>`).join('')}</select></label><label>Voice consent<select id="consentMode"><option value="notice" ${settings.consent_mode === 'notice' ? 'selected' : ''}>Visible notice with opt-out</option><option value="explicit" ${settings.consent_mode === 'explicit' ? 'selected' : ''}>Explicit opt-in only</option></select><small>A notice is posted whenever recording starts. Members can always use /privacy block.</small></label><label>Rolling buffer<select id="bufferMinutes">${[15,20,25,30].map(value => `<option value="${value}" ${value === settings.buffer_size_minutes ? 'selected' : ''}>${value} minutes</option>`).join('')}</select></label><label>Clip retention<input id="retentionDays" type="number" min="1" max="3650" value="${settings.retention_days || 90}"><small>Favorited clips do not expire automatically.</small></label><button class="button" type="submit">${settings.onboarding_completed_at ? 'Save settings' : 'Save and finish setup'}</button></form><section class="manage-card"><div><h2>Storage</h2><p>${formatBytes(settings.storage_used_bytes)} of ${formatBytes(settings.storage_quota_bytes)} used.</p></div><progress class="storage-meter" aria-label="Server storage used" max="100" value="${percent}">${Math.round(percent)}%</progress><small>Old trash is removed after 30 days. Favorited clips remain until deliberately trashed.</small></section>${admins ? `<section class="manage-card"><div><h2>Bot admins</h2><p>Delegated admins do not need a Discord role.</p></div>${adminNotice}<form id="adminForm" class="inline-form"><label><span class="sr-only">Discord user ID</span><input id="adminId" inputmode="numeric" pattern="[0-9]{17,20}" placeholder="Discord user ID" required></label><button class="button" type="submit">Add</button></form><div id="adminList" class="admin-list">${admins.length ? admins.map(admin => `<div><span><strong>${escapeHtml(admin.user_id)}</strong><small>Added ${escapeHtml(relativeTime(admin.created_at))}</small></span><button class="icon-control danger-icon" data-remove-admin="${escapeHtml(admin.user_id)}" type="button" aria-label="Remove admin">&times;</button></div>`).join('') : '<p class="empty-copy">No delegated admins.</p>'}</div></section>` : adminNotice}${ownerTools}</div>`;
+  elements.view.querySelectorAll('[data-remove-admin]').forEach(button => { button.innerHTML = svgIcon('close'); });
+  if (settings.plan === 'free') {
+    const capBadge = `<span class="cap-badge" title="Free plan limit">${svgIcon('crown')}<span class="sr-only">Free plan limit</span></span>`;
+    document.getElementById('bufferMinutes').closest('label').insertAdjacentHTML('afterbegin', capBadge);
+    document.getElementById('retentionDays').closest('label').insertAdjacentHTML('afterbegin', capBadge);
+    const storageCard = elements.view.querySelector('.storage-meter').closest('.manage-card');
+    storageCard.querySelector('h2').insertAdjacentHTML('beforeend', capBadge);
+    storageCard.insertAdjacentHTML('beforeend', `<div class="limit-summary"><span>${capBadge} Clip limit ${formatDuration(settings.max_clip_seconds)}</span><span>${capBadge} Buffer limit ${settings.max_buffer_minutes} min</span><span>${capBadge} Retention limit ${settings.max_retention_days} days</span></div>`);
+  }
   const bufferSelect = document.getElementById('bufferMinutes');
   const selectedBuffer = Math.min(settings.buffer_size_minutes, settings.max_buffer_minutes);
   bufferSelect.replaceChildren(...[5,10,15,20,25,30].filter(value => value <= settings.max_buffer_minutes).map(value => new Option(`${value} minutes`, value, value === selectedBuffer, value === selectedBuffer)));
   document.getElementById('retentionDays').max = settings.max_retention_days;
-  const headingCopy = elements.view.querySelector('.page-heading p:last-child');
+  const headingCopy = elements.view.querySelector('.page-summary p');
   headingCopy.insertAdjacentHTML('afterbegin', `<span class="plan-label">${settings.plan === 'premium' ? 'Premium' : 'Free'}</span> `);
-  if (settings.suspended) elements.view.querySelector('.page-heading').insertAdjacentHTML('afterend', `<div class="inline-error"><strong>Recording is paused.</strong> ${escapeHtml(settings.suspension_reason)}</div>`);
+  if (settings.suspended) elements.view.querySelector('.page-summary').insertAdjacentHTML('afterend', `<div class="inline-error"><strong>Recording is paused.</strong> ${escapeHtml(settings.suspension_reason)}</div>`);
 }
 
 async function renderPlatform() {
   if (!state.me.platformOwner) return accessDenied();
   document.title = 'Platform controls · ClipThat';
+  elements.workspaceStatus.hidden = true;
   const platformNav = '<a href="/platform" data-route class="active" aria-current="page">Platform</a>';
   elements.desktopNav.innerHTML = platformNav; elements.mobileNav.innerHTML = platformNav;
-  const identityCopy = elements.mobileServerPicker.querySelector('span:nth-child(2)');
-  if (identityCopy) identityCopy.innerHTML = '<small>CLIPTHAT</small><strong>Platform controls</strong>';
   elements.view.innerHTML = skeleton(4);
   const [data, audit] = await Promise.all([routeFetch('/api/platform/servers'), routeFetch('/api/platform/activity')]);
+  state.platformDefaults = data.plan_defaults || null;
   elements.view.innerHTML = `<section class="page-heading platform-heading"><p class="eyebrow">OWNER CONTROL</p><h1>Platform</h1><p>Plans, limits, and recording moderation. Every change is audited.</p></section><div class="platform-list">${data.servers.map(server => `<details class="platform-server ${server.suspended ? 'suspended' : ''}"><summary><span><strong>${escapeHtml(server.name)}</strong><small>${escapeHtml(server.guild_id)} · ${server.clip_count} clips · ${formatBytes(server.storage_used_bytes)}</small></span><span class="platform-badges"><b class="plan-label">${server.plan === 'premium' ? 'Premium' : 'Free'}</b>${server.suspended ? '<b class="paused-label">Paused</b>' : ''}</span></summary><form data-platform-guild="${escapeHtml(server.guild_id)}"><div class="platform-fields"><label>Plan<select name="plan"><option value="free" ${server.plan === 'free' ? 'selected' : ''}>Free</option><option value="premium" ${server.plan === 'premium' ? 'selected' : ''}>Premium</option></select></label><label>Storage (MiB)<input name="storage_mib" type="number" min="1" max="10485760" value="${Math.round(server.storage_quota_bytes / 1048576)}" required></label><label>Max clip (seconds)<input name="max_clip_seconds" type="number" min="5" max="1800" value="${server.max_clip_seconds}" required></label><label>Max retention (days)<input name="max_retention_days" type="number" min="1" max="3650" value="${server.max_retention_days}" required></label><label>Max buffer (minutes)<input name="max_buffer_minutes" type="number" min="5" max="30" value="${server.max_buffer_minutes}" required></label></div><label class="moderation-toggle"><input name="suspended" type="checkbox" ${server.suspended ? 'checked' : ''}><span>Pause new recording and clipping</span></label><label>Private moderation note<input name="suspension_reason" maxlength="500" value="${escapeHtml(server.suspension_reason)}" placeholder="Required while paused"></label><div class="form-footer"><small>${formatBytes(server.storage_used_bytes)} currently stored</small><button class="button" type="submit">Save controls</button></div></form></details>`).join('') || '<div class="empty-panel">No servers are installed.</div>'}</div>`;
   if (audit.activity.length) elements.view.insertAdjacentHTML('beforeend', `<section class="platform-audit"><div class="section-heading"><h2>Recent owner activity</h2></div>${audit.activity.slice(0, 20).map(item => `<div><span><strong>${escapeHtml(item.name || item.guild_id)}</strong><small>${escapeHtml(item.action.replaceAll('_', ' '))}</small></span><time>${escapeHtml(relativeTime(item.created_at))}</time></div>`).join('')}</section>`);
 }
@@ -269,8 +308,11 @@ async function renderRoute() {
   }
   if (target.type === 'clip') { renderShell(); try { await renderEditor(target.clipId); } catch (error) { toast(error.message, 'error'); } return; }
   const server = currentServer(target.guildId); if (!server) { renderShell(); return accessDenied(); }
-  state.server = server; localStorage.setItem('clipthat.lastServer', server.id); renderShell();
+  state.server = server; localStorage.setItem('clipthat.lastServer', server.id);
+  if (state.overview?.server?.id !== server.id) state.overview = null;
+  renderShell();
   try {
+    if (!state.overview) await refreshOverview();
     if (target.view === 'home') await renderHome();
     else if (target.view === 'library' || target.view === 'favorites') await renderLibrary(target.view);
     else if (target.view === 'manage') await renderManage();
@@ -295,15 +337,21 @@ async function clipAction(button) {
     catch (error) { clip.title = old; toast(error.message, 'error'); renderRoute(); }
   }
   if (button.dataset.action === 'favorite') {
-    const old = clip.favorited; clip.favorited = !old; button.classList.toggle('selected', clip.favorited); button.innerHTML = clip.favorited ? '&#9733;' : '&#9734;';
+    const old = clip.favorited; clip.favorited = !old; button.classList.toggle('selected', clip.favorited); button.innerHTML = svgIcon(clip.favorited ? 'starFilled' : 'star');
     try { Object.assign(clip, await apiFetch(`/api/clips/${encodeURIComponent(id)}/favorite`, { method:'POST', body:JSON.stringify({ favorited:clip.favorited }) })); }
-    catch (error) { clip.favorited = old; button.classList.toggle('selected', old); button.innerHTML = old ? '&#9733;' : '&#9734;'; throw error; }
+    catch (error) { clip.favorited = old; button.classList.toggle('selected', old); button.innerHTML = svgIcon(old ? 'starFilled' : 'star'); throw error; }
   }
   if (button.dataset.action === 'trash') {
     if (!await confirmAction('Move clip to trash?', 'An admin can restore it for 30 days.', 'Move to trash', true)) return;
     await apiFetch(`/api/clips/${encodeURIComponent(id)}`, { method:'DELETE', body:JSON.stringify({ reason:'dashboard' }) }); toast('Moved to trash.'); await go(navUrl('library'), { force:true });
   }
   if (button.dataset.action === 'restore') { await apiFetch(`/api/clips/${encodeURIComponent(id)}/restore`, { method:'POST', body:'{}' }); toast('Clip restored.'); await go(navUrl('library'), { force:true }); }
+  if (button.dataset.action === 'permanent-delete') {
+    if (!await confirmAction('Permanently delete this clip?', 'This immediately removes its audio, revisions, and history. This cannot be undone.', 'Delete permanently', true)) return;
+    await apiFetch(`/api/clips/${encodeURIComponent(id)}/permanent`, { method:'DELETE', body:'{}' });
+    toast('Clip permanently deleted.');
+    if (state.editor) await go(navUrl('library'), { force:true }); else await renderLibrary('library');
+  }
   if (button.dataset.action === 'remove-self') {
     if (!await confirmAction('Remove your voice?', 'This updates every shared revision and replaces the posted audio. Copies already downloaded cannot be recalled.', 'Remove my voice', true)) return;
     const updated = await apiFetch(`/api/clips/${encodeURIComponent(id)}/participants/me/remove`, { method:'POST', body:'{}' });
@@ -348,7 +396,7 @@ document.addEventListener('click', async event => {
       else if (button.dataset.action === 'favorite') { button.disabled = true; try { await clipAction(button); } finally { button.disabled = false; } }
       else await withButton(button, labels[button.dataset.action], () => clipAction(button));
     }
-    else if (button.dataset.action === 'show-active' || button.dataset.action === 'show-trash') { state.trash = button.dataset.action === 'show-trash'; renderLibrary('library'); }
+    else if (button.dataset.action === 'show-active' || button.dataset.action === 'show-trash') { state.trash = button.dataset.action === 'show-trash'; renderWorkspaceContext(); renderLibrary('library'); }
     else if (button.dataset.action === 'reset-edit') { state.editor.form = structuredClone(state.editor.saved); await renderEditor(state.editor.clip.id); }
     else if (button.dataset.action === 'preview-edit') await withButton(button, 'Rendering preview…', async () => { const data = await apiFetch(`/api/clips/${encodeURIComponent(state.editor.clip.id)}/previews`, { method:'POST', body:JSON.stringify(editPayload()), timeout:120_000 }); playClip({ ...state.editor.clip, audio_url:data.preview_url, title:`${state.editor.clip.title} · Preview` }); });
     else if (button.dataset.action === 'save-edit') await withButton(button, 'Saving revision…', async () => { const data = await apiFetch(`/api/clips/${encodeURIComponent(state.editor.clip.id)}/revisions`, { method:'POST', body:JSON.stringify(editPayload()), timeout:180_000 }); toast('New revision saved.'); state.editor = null; await renderEditor(data.clip.id); });
@@ -376,6 +424,17 @@ elements.view.addEventListener('input', event => {
   if (event.target.dataset.speakerVolume) { state.editor.form.volumes[event.target.dataset.speakerVolume] = Number(event.target.value); event.target.closest('.speaker-control').querySelector('small').textContent = `${Math.round(Number(event.target.value) * 100)}% volume`; markDirty(); }
   if (event.target.dataset.speakerMute) { const id = event.target.dataset.speakerMute; state.editor.form.mutes[id] = event.target.checked; const row = event.target.closest('.speaker-control'); row.querySelector('[data-speaker-volume]').disabled = event.target.checked; row.querySelector('small').textContent = event.target.checked ? 'Muted' : `${Math.round((state.editor.form.volumes[id] || 1) * 100)}% volume`; markDirty(); }
 });
+elements.view.addEventListener('change', event => {
+  if (event.target.name !== 'plan') return;
+  const form = event.target.closest('[data-platform-guild]');
+  const defaults = state.platformDefaults?.[event.target.value];
+  if (!form || !defaults) return;
+  form.elements.storage_mib.value = Math.round(defaults.storage_quota_bytes / 1048576);
+  form.elements.max_clip_seconds.value = defaults.max_clip_seconds;
+  form.elements.max_retention_days.value = defaults.max_retention_days;
+  form.elements.max_buffer_minutes.value = defaults.max_buffer_minutes;
+  toast(`${event.target.value === 'premium' ? 'Premium' : 'Free'} defaults loaded. Save once, then adjust any limit if needed.`);
+});
 elements.view.addEventListener('pointerdown', event => { const handle = event.target.closest('[data-trim-handle]'); if (!handle) return; draggingTrim = handle.dataset.trimHandle; handle.setPointerCapture?.(event.pointerId); trimFromPointer(event); event.preventDefault(); });
 window.addEventListener('pointermove', event => { if (draggingTrim) trimFromPointer(event); });
 window.addEventListener('pointerup', () => { draggingTrim = null; });
@@ -399,7 +458,7 @@ elements.view.addEventListener('submit', async event => {
   } catch (error) { toast(error.message, 'error'); }
 });
 
-elements.openServerPicker.onclick = serverPicker; elements.mobileServerPicker.onclick = serverPicker; elements.accountButton.onclick = accountDialog;
+elements.openServerPicker.onclick = serverPicker; elements.accountButton.onclick = accountDialog;
 document.querySelectorAll('[data-close-dialog]').forEach(button => button.onclick = () => button.closest('dialog').close());
 elements.renameForm.addEventListener('submit', event => {
   event.preventDefault();
@@ -422,12 +481,10 @@ document.addEventListener('submit', async event => {
 });
 window.addEventListener('popstate', renderRoute);
 window.addEventListener('beforeunload', event => { if (editorDirty()) { event.preventDefault(); event.returnValue = ''; } });
-elements.theme.onclick = () => { const light = !document.body.classList.contains('light'); document.body.classList.toggle('light', light); localStorage.setItem('clipthat.theme', light ? 'light' : 'dark'); };
-document.body.classList.toggle('light', localStorage.getItem('clipthat.theme') === 'light');
 elements.playerToggle.onclick = () => elements.persistentAudio.paused ? elements.persistentAudio.play() : elements.persistentAudio.pause();
 elements.playerClose.onclick = () => { elements.persistentAudio.pause(); elements.player.hidden = true; state.audioClip = null; };
-elements.persistentAudio.onplay = () => { elements.playerToggle.innerHTML = '&#10074;&#10074;'; elements.playerToggle.setAttribute('aria-label', 'Pause'); };
-elements.persistentAudio.onpause = () => { elements.playerToggle.innerHTML = '&#9654;'; elements.playerToggle.setAttribute('aria-label', 'Play'); };
+elements.persistentAudio.onplay = () => { elements.playerToggle.innerHTML = svgIcon('pause'); elements.playerToggle.setAttribute('aria-label', 'Pause'); };
+elements.persistentAudio.onpause = () => { elements.playerToggle.innerHTML = svgIcon('play'); elements.playerToggle.setAttribute('aria-label', 'Play'); };
 elements.persistentAudio.onerror = () => toast('This audio could not be loaded. It may still be rendering or your session may have ended.', 'error');
 elements.persistentAudio.ontimeupdate = () => { const audio = elements.persistentAudio; elements.playerSeek.value = audio.duration ? audio.currentTime / audio.duration * 100 : 0; elements.playerTime.textContent = `${formatDuration(audio.currentTime)} / ${formatDuration(audio.duration)}`; };
 elements.playerSeek.oninput = () => { if (elements.persistentAudio.duration) elements.persistentAudio.currentTime = Number(elements.playerSeek.value) / 100 * elements.persistentAudio.duration; };

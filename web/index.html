@@ -12,33 +12,33 @@
   <div id="appShell" class="app-shell" hidden>
     <aside class="server-rail" aria-label="Discord servers">
       <div id="serverRail" class="server-stack"></div>
-      <button id="openServerPicker" class="rail-button" type="button" aria-label="Switch or add server">+</button>
+      <button id="openServerPicker" class="rail-button" type="button" aria-label="Switch or add server" data-icon="add"></button>
     </aside>
     <section class="workspace">
       <header class="workspace-header">
-        <button id="mobileServerPicker" class="server-identity" type="button"></button>
+        <div id="workspaceContext" class="workspace-context" aria-live="polite"></div>
         <nav id="desktopNav" class="primary-nav" aria-label="Server navigation"></nav>
+        <div id="workspaceStatus" class="workspace-status" role="status" aria-live="polite"></div>
         <div class="header-actions">
-          <button id="theme" class="icon-control" type="button" aria-label="Change theme">&#9680;</button>
           <button id="accountButton" class="avatar-button" type="button" aria-label="Account"></button>
         </div>
       </header>
       <main id="view" class="view" tabindex="-1"></main>
     </section>
     <section id="player" class="player" hidden aria-label="Now playing">
-      <button id="playerToggle" class="player-play" type="button" aria-label="Play">&#9654;</button>
+      <button id="playerToggle" class="player-play" type="button" aria-label="Play" data-icon="play"></button>
       <div class="player-copy"><strong id="playerTitle"></strong><span id="playerServer"></span></div>
       <input id="playerSeek" type="range" min="0" max="100" value="0" aria-label="Playback position">
       <span id="playerTime" class="player-time">0:00</span>
-      <button id="playerClose" class="icon-control" type="button" aria-label="Close player">&times;</button>
+      <button id="playerClose" class="icon-control" type="button" aria-label="Close player" data-icon="close"></button>
       <audio id="persistentAudio" preload="metadata"></audio>
     </section>
     <nav id="mobileNav" class="mobile-nav" aria-label="Server navigation"></nav>
   </div>
-  <dialog id="serverDialog" class="sheet"><div class="sheet-head"><h2>Your servers</h2><button class="icon-control" data-close-dialog type="button" aria-label="Close">&times;</button></div><div id="serverChoices"></div></dialog>
-  <dialog id="accountDialog" class="sheet"><div class="sheet-head"><h2>Account</h2><button class="icon-control" data-close-dialog type="button" aria-label="Close">&times;</button></div><div id="accountContent"></div></dialog>
-  <dialog id="renameDialog" class="sheet compact-sheet"><form id="renameForm"><div class="sheet-head"><h2 id="renameTitle">Rename clip</h2><button class="icon-control" data-close-dialog type="button" aria-label="Close">&times;</button></div><label><span id="renameLabel">Clip title</span><input id="renameInput" maxlength="80" autocomplete="off" required></label><div class="dialog-actions"><button class="button secondary" data-close-dialog type="button">Cancel</button><button id="renameSubmit" class="button" type="submit">Save name</button></div></form></dialog>
-  <dialog id="confirmDialog" class="sheet compact-sheet"><div class="sheet-head"><h2 id="confirmTitle">Confirm action</h2><button class="icon-control" data-confirm-value="false" type="button" aria-label="Close">&times;</button></div><p id="confirmMessage" class="dialog-copy"></p><div class="dialog-actions"><button class="button secondary" data-confirm-value="false" type="button">Cancel</button><button id="confirmButton" class="button" data-confirm-value="true" type="button">Continue</button></div></dialog>
+  <dialog id="serverDialog" class="sheet"><div class="sheet-head"><h2>Your servers</h2><button class="icon-control" data-close-dialog type="button" aria-label="Close" data-icon="close"></button></div><div id="serverChoices"></div></dialog>
+  <dialog id="accountDialog" class="sheet"><div class="sheet-head"><h2>Account</h2><button class="icon-control" data-close-dialog type="button" aria-label="Close" data-icon="close"></button></div><div id="accountContent"></div></dialog>
+  <dialog id="renameDialog" class="sheet compact-sheet"><form id="renameForm"><div class="sheet-head"><h2 id="renameTitle">Rename clip</h2><button class="icon-control" data-close-dialog type="button" aria-label="Close" data-icon="close"></button></div><label><span id="renameLabel">Clip title</span><input id="renameInput" maxlength="80" autocomplete="off" required></label><div class="dialog-actions"><button class="button secondary" data-close-dialog type="button">Cancel</button><button id="renameSubmit" class="button" type="submit">Save name</button></div></form></dialog>
+  <dialog id="confirmDialog" class="sheet compact-sheet"><div class="sheet-head"><h2 id="confirmTitle">Confirm action</h2><button class="icon-control" data-confirm-value="false" type="button" aria-label="Close" data-icon="close"></button></div><p id="confirmMessage" class="dialog-copy"></p><div class="dialog-actions"><button class="button secondary" data-confirm-value="false" type="button">Cancel</button><button id="confirmButton" class="button" data-confirm-value="true" type="button">Continue</button></div></dialog>
   <div id="toastRegion" class="toast-region" aria-live="polite"></div>
   <script type="module" src="/app.js"></script>
 </body>

@@ -7,7 +7,7 @@ const { requireAuth, isPlatformAdmin, hasGuildAccess, clipCapabilities } = requi
 const { encode, renderWaveform } = require('../../bot/clipManager');
 const { loadConfig } = require('../../bot/utils');
 const { runAudioJob, checkPreviewRate } = require('../audioJobs');
-const { assertQuota, refreshClipStorage, clipsRoot, inside } = require('../storage');
+const { assertQuota, refreshClipStorage, clipsRoot, inside, removeClipDirectory, removePreviewFile } = require('../storage');
 const { cloneWithParticipant, participant, participants, removeParticipant, revisionReady } = require('../../bot/participation');
 const { attachGuildAccess } = require('../guildAccess');
 
@@ -449,6 +449,27 @@ router.delete('/:id', (req, res) => {
     logActivity(clip, req.user.userId, 'trash', { purgeAt: now + TRASH_TTL_MS });
   })();
   res.status(202).json(serializeClip(req, getClip(clip.id)));
+});
+
+router.delete('/:id/permanent', (req, res, next) => {
+  try {
+    const clip = memberClip(req, res, { allowDeleted: true });
+    if (!clip) return;
+    if (!clip.deleted_at) return res.status(409).json({ error:'Move the clip to trash before permanently deleting it.', code:'CLIP_NOT_TRASHED' });
+    if (!requireCapability(req, res, clip, 'canRestore', 'Only bot admins can permanently delete trashed clips.')) return;
+    const previews = db.prepare('SELECT audio_path FROM clip_previews WHERE clip_id=?').all(clip.id);
+    for (const preview of previews) removePreviewFile(preview.audio_path);
+    removeClipDirectory(clip.original_audio_path);
+    db.transaction(() => {
+      db.prepare('DELETE FROM clip_previews WHERE clip_id=?').run(clip.id);
+      db.prepare('DELETE FROM clip_revisions WHERE clip_id=?').run(clip.id);
+      db.prepare('DELETE FROM clip_participants WHERE clip_id=?').run(clip.id);
+      db.prepare('DELETE FROM clip_activity WHERE clip_id=?').run(clip.id);
+      db.prepare('DELETE FROM clips WHERE id=?').run(clip.id);
+    })();
+    console.info(JSON.stringify({ event:'clip_permanently_deleted', clipId:clip.id, guildId:clip.guild_id, actorId:req.user.userId }));
+    res.status(204).end();
+  } catch (error) { next(error); }
 });
 
 router.post('/:id/restore', (req, res) => {

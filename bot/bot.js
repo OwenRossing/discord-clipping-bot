@@ -44,7 +44,7 @@ function clipButtons(clipId) {
     new ButtonBuilder().setCustomId(`play:${clipId}`).setLabel('Play in voice').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setURL(dashboardUrl(`/clips/${clipId}`)).setLabel('Open dashboard').setStyle(ButtonStyle.Link),
     new ButtonBuilder().setCustomId(`clip-remove:${clipId}`).setLabel('Remove my voice').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId(`clip-clone:${clipId}`).setLabel('Add me (new cut)').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId(`clip-clone:${clipId}`).setLabel('Add me').setStyle(ButtonStyle.Secondary)
   );
 }
 

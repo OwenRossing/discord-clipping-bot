@@ -5,8 +5,6 @@ let user;
 let owner = false;
 
 const escapeHtml = value => String(value).replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
-document.querySelector('#theme').onclick = () => { document.body.classList.toggle('light'); localStorage.theme = document.body.classList.contains('light') ? 'light' : 'dark'; };
-if (localStorage.theme === 'light') document.body.classList.add('light');
 document.querySelector('#clipsLink').href = guild ? `/?guild=${encodeURIComponent(guild)}` : '/';
 
 async function json(url, options) {
