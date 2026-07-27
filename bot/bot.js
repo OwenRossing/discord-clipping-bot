@@ -1,6 +1,6 @@
 const {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, EmbedBuilder, Events,
-  GatewayIntentBits, REST, Routes
+  GatewayIntentBits, PermissionFlagsBits, REST, Routes
 } = require('discord.js');
 const {
   AudioPlayerStatus, createAudioPlayer, createAudioResource, entersState,
@@ -137,7 +137,8 @@ async function startRecording(interaction, legacy = false) {
     if (voiceReady) throw new Error(`${botName(interaction.guild)} could not post its privacy notice here. Give the bot permission to view the channel, send messages, and embed links, then try again.`);
     throw new Error(`Could not connect to **${voiceChannel.name}**. Check the bot's Connect, Speak, and voice-encryption permissions, then try again.`);
   }
-  return interaction.editReply({ content:`Recording started in **${voiceChannel.name}**.${legacy ? '\n`/record join` is now `/record start`; the old name will remain for one release.' : ''}` });
+  const permissionWarning = voicePermissionProblem(interaction.guildId, voiceChannel.id);
+  return interaction.editReply({ content:`Recording started in **${voiceChannel.name}**.${permissionWarning ? `\n⚠️ Recording works, but ${permissionWarning}` : ''}${legacy ? '\n`/record join` is now `/record start`; the old name will remain for one release.' : ''}` });
 }
 
 function updatePrivacy(interaction, allowed) {
@@ -192,13 +193,49 @@ async function showSettings(interaction) {
   return interaction.reply(ephemeral({ content:`**Recording settings**\nPlan: ${settings.plan === 'premium' ? 'Premium' : 'Free'}${settings.suspended_at ? ' · recording paused' : ''}\nBuffer: ${settings.buffer_size_minutes} minutes\nRetention: ${settings.retention_days} days\nMaximum clip: ${formatDuration(settings.max_clip_seconds || 1800)}\nVoice privacy: ${settings.consent_mode === 'explicit' ? 'explicit opt-in' : 'visible notice with opt-out'}\nClips channel: ${settings.clips_channel_id ? `<#${settings.clips_channel_id}>` : `#${config.bot.defaultClipsChannel}`}`, components:[row] }));
 }
 
+// Receiving audio only needs View Channel and Connect, so the bot can record perfectly well
+// in a channel it is not allowed to talk in. Discord then suppresses it whenever it tries to
+// transmit, which looks exactly like an ordinary self-mute that never lifts.
+function voicePermissionProblem(guildId, channelId) {
+  const guild = client.guilds.cache.get(guildId);
+  const channel = guild?.channels.cache.get(channelId);
+  const permissions = guild?.members?.me ? channel?.permissionsFor(guild.members.me) : null;
+  if (!permissions) return null;
+  const missing = [];
+  if (!permissions.has(PermissionFlagsBits.Speak)) missing.push('Speak');
+  if (!permissions.has(PermissionFlagsBits.UseVAD)) missing.push('Use Voice Activity');
+  if (!missing.length) return null;
+  return `${botName(guild)} needs the **${missing.join('** and **')}** permission${missing.length > 1 ? 's' : ''} in **${channel.name}** before it can play audio. Discord keeps the bot muted without ${missing.length > 1 ? 'them' : 'it'}.`;
+}
+
 async function playClipInChannel(state, clip) {
   const revision = playableRevision(clip);
   if (!revisionReady(clip, revision)) throw new Error('This clip is applying a voice privacy change. Try again shortly.');
+  const problem = voicePermissionProblem(clip.guild_id, state.connection.joinConfig.channelId);
+  if (problem) throw new Error(problem);
+  state.playback?.stop();
   const player = createAudioPlayer();
   const subscription = state.connection.subscribe(player);
   let playerCleaned = false;
-  const cleanupPlayer = () => { if (playerCleaned) return; playerCleaned = true; subscription?.unsubscribe(); state.connection.rejoin({ selfMute:true }); };
+  const cleanupPlayer = () => {
+    if (playerCleaned) return;
+    playerCleaned = true;
+    clearTimeout(stalledTimer);
+    subscription?.unsubscribe();
+    if (state.playback === handle) state.playback = null;
+    state.connection.rejoin({ selfMute:true });
+  };
+  const handle = { stop:() => { player.stop(true); cleanupPlayer(); } };
+  state.playback = handle;
+  // A player with no transmittable connection sits in AutoPaused rather than reaching Idle,
+  // so without this the bot would stay unmuted indefinitely with nothing playing.
+  const stalledTimer = setTimeout(() => {
+    if (player.state.status !== AudioPlayerStatus.Playing) {
+      log(`Voice playback for ${clip.id} stalled in ${player.state.status}; re-muting.`);
+      handle.stop();
+    }
+  }, 10_000);
+  stalledTimer.unref?.();
   player.on('error', error => { log(`Voice playback failed for ${clip.id}: ${error.message}`); cleanupPlayer(); });
   state.connection.rejoin({ selfMute:false });
   // rejoin() only sends the gateway unmute packet; it doesn't confirm Discord applied it.
