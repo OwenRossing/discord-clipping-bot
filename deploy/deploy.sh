@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
-# Run this ON THE VM, as the `clipthat` user, from /opt/clipthat.
+# Run this ON THE VM as your normal sudo-capable admin user (NOT the clipthat
+# service account, which has no shell and no sudo rights on purpose).
 # Usage: ./deploy/deploy.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
+REPO_DIR="$(pwd)"
 
 echo "Fetching latest code..."
-git pull --ff-only
+sudo -u clipthat git -C "$REPO_DIR" pull --ff-only
 
 echo "Installing dependencies..."
-npm ci --omit=dev
+sudo -u clipthat npm --prefix "$REPO_DIR" ci --omit=dev
 
 echo "Applying database migrations..."
-npm run init-db
+sudo -u clipthat npm --prefix "$REPO_DIR" run init-db
 
 echo "Restarting services..."
 sudo systemctl restart clipthat-api.service clipthat-bot.service
 
-echo "Deployed $(git rev-parse --short HEAD) at $(date -u +%FT%TZ)"
+echo "Deployed $(git -C "$REPO_DIR" rev-parse --short HEAD) at $(date -u +%FT%TZ)"
 sudo systemctl --no-pager status clipthat-api.service clipthat-bot.service

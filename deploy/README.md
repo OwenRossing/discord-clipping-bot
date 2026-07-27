@@ -25,7 +25,8 @@ which node   # note the path — usually /usr/bin/node, matches the systemd unit
 sudo useradd --system --create-home --shell /usr/sbin/nologin clipthat
 sudo mkdir -p /opt/clipthat
 sudo chown clipthat:clipthat /opt/clipthat
-sudo -u clipthat git clone https://github.com/<you>/discord-clipping-bot.git /opt/clipthat
+sudo -u clipthat git clone https://github.com/OwenRossing/discord-clipping-bot.git /opt/clipthat
+sudo git config --system --add safe.directory /opt/clipthat
 cd /opt/clipthat
 sudo -u clipthat npm ci --omit=dev
 ```
@@ -59,25 +60,30 @@ If `which node` in step 2 printed something other than `/usr/bin/node`, edit the
 
 ## 6. Cloudflare Tunnel
 
-On Namecheap: point the domain's nameservers at the two Cloudflare nameservers shown when you add the domain as a zone in the Cloudflare dashboard (free plan is fine). This just moves DNS management to Cloudflare — the domain stays registered at Namecheap.
+The domain must already show as an **Active** zone in the Cloudflare dashboard before any of this works — add it under "Add a site" (free plan), then point its nameservers at the two Cloudflare gives you (at your registrar, e.g. Namecheap's "Custom DNS" setting). This just moves DNS management to Cloudflare; the domain stays registered wherever you bought it. Nameserver changes can take a few minutes to a day to propagate — `cloudflared tunnel login` will simply not show the domain as a choice until it's Active.
 
-On the VM:
+Install cloudflared. **The apt repo only has builds for specific LTS codenames** — if `lsb_release -cs` reports something newer/rolling (e.g. `resolute`), `apt install` will 404. Skip the repo and grab the `.deb` directly, which always works:
 
 ```
-curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloudflare-main.gpg
-echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflared.list
-sudo apt update && sudo apt install -y cloudflared
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cloudflared.deb
+sudo dpkg -i /tmp/cloudflared.deb
+cloudflared --version
+```
 
-cloudflared tunnel login          # opens a browser link, authorize against your Cloudflare account
+Then, as whichever admin user you normally sudo from (**not** the `clipthat` service user — cloudflared's systemd service runs as root regardless of who sets it up, so there's no benefit to doing this as `clipthat`):
+
+```
+cloudflared tunnel login          # opens a browser link — pick your domain, it must show as Active first
 cloudflared tunnel create clipthat
 ```
 
-That prints a tunnel ID and writes credentials to `~/.cloudflared/<id>.json`. Copy `deploy/cloudflared-config.yml.example` to `~/.cloudflared/config.yml`, fill in the tunnel ID and your real hostname, then:
+That prints a **Tunnel ID** and writes credentials to `~/.cloudflared/<id>.json` under your current user's home. Create `~/.cloudflared/config.yml` (see `deploy/cloudflared-config.yml.example` for the shape) with that real tunnel ID, the credentials path it just printed, and your real hostname, then:
 
 ```
 cloudflared tunnel route dns clipthat clips.yourdomain.com
 sudo cloudflared service install
 sudo systemctl enable --now cloudflared
+systemctl status cloudflared --no-pager
 ```
 
 Your VM's IP is never exposed — Cloudflare terminates TLS and tunnels the connection in.
@@ -86,24 +92,36 @@ Your VM's IP is never exposed — Cloudflare terminates TLS and tunnels the conn
 
 Register the exact production callback URL — `https://clips.yourdomain.com/api/auth/discord/callback` — under OAuth2 → Redirects. It must match `DISCORD_REDIRECT_URI` in `.env` byte-for-byte.
 
-## 8. Smoke test
+## 8. Verify everything at once
+
+`deploy/verify.sh` checks Node version, `.env` sanity (production mode, real secrets, HTTPS URLs, matching redirect URI), data directories, all systemd services and timers, the local and public `/api/health` endpoints, and — importantly — that the dev-login endpoint is actually unreachable from the public internet. Run it any time, including right now:
+
+```
+./deploy/verify.sh
+```
+
+## 9. Smoke test
 
 Visit `https://clips.yourdomain.com`, sign in with Discord, confirm a server you manage shows up. Then in Discord, run `/record start` in a voice channel and `/clipthat` to confirm the bot process is actually working end to end.
 
-## 9. Future updates
+## 10. Future updates
 
-From now on, deploying a change is:
-
-```
-sudo -u clipthat /opt/clipthat/deploy/deploy.sh
-```
-
-That does `git pull`, reinstalls dependencies, re-runs migrations, and restarts both services. It calls `sudo systemctl restart`, so either run it as a user with sudo, or add a narrow NOPASSWD rule for just that so it's a single command with no prompt:
+From now on, deploying a change is, run as **yourself** (your normal sudo-capable login user — the script switches to `clipthat` internally for the parts that need it):
 
 ```
-echo 'clipthat ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart clipthat-api.service clipthat-bot.service, /usr/bin/systemctl status clipthat-api.service clipthat-bot.service' | sudo tee /etc/sudoers.d/clipthat-deploy
+cd /opt/clipthat
+./deploy/deploy.sh
 ```
+
+That pulls as `clipthat` (matching the repo's file ownership, avoiding the "dubious ownership" error you'd get running plain `git pull` as the wrong user), reinstalls dependencies, re-runs migrations, then restarts both services with `sudo systemctl restart`. Expect two sudo prompts (once for the `sudo -u clipthat` steps, once for `systemctl`) unless you set up NOPASSWD rules for both:
+
+```
+echo 'discord-bot-host ALL=(clipthat) NOPASSWD: ALL
+discord-bot-host ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart clipthat-api.service clipthat-bot.service, /usr/bin/systemctl status clipthat-api.service clipthat-bot.service' | sudo tee /etc/sudoers.d/clipthat-deploy
+```
+
+(swap `discord-bot-host` for whichever admin user actually runs deploys)
 
 ## Rollback
 
-`git log --oneline -5` to find the last-good commit, then `git checkout <sha>` (or `git reset --hard <sha>` if you're sure), `npm ci --omit=dev`, `sudo systemctl restart clipthat-api clipthat-bot`.
+`sudo -u clipthat git -C /opt/clipthat log --oneline -5` to find the last-good commit, then `sudo -u clipthat git -C /opt/clipthat checkout <sha>` (or `reset --hard <sha>` if you're sure), `sudo -u clipthat npm --prefix /opt/clipthat ci --omit=dev`, `sudo systemctl restart clipthat-api clipthat-bot`.

@@ -1,7 +1,9 @@
-# Copy to ~/.cloudflared/config.yml on the VM (as the user running cloudflared)
-# and replace TUNNEL_ID and the hostname.
+# Copy to ~/.cloudflared/config.yml on the VM, as whichever admin user ran
+# `cloudflared tunnel login` / `tunnel create` (NOT the clipthat service user —
+# cloudflared's own systemd service runs as root regardless of who set it up).
+# Replace TUNNEL_ID, YOUR_USER, and the hostname with the real values `tunnel create` printed.
 tunnel: TUNNEL_ID
-credentials-file: /home/clipthat/.cloudflared/TUNNEL_ID.json
+credentials-file: /home/YOUR_USER/.cloudflared/TUNNEL_ID.json
 
 ingress:
   - hostname: clips.yourdomain.com
