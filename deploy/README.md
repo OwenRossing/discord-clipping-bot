@@ -40,10 +40,11 @@ sudo -u clipthat nano .env
 
 Fill in `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `SESSION_SECRET` (a real random string, not the placeholder), `PLATFORM_OWNER_IDS` (your Discord user ID), and replace every `clips.yourdomain.com` with your actual hostname. Leave `TRUST_PROXY=loopback` and `API_HOST=127.0.0.1` as-is — that's specifically because Cloudflare Tunnel talks to the app over localhost.
 
-Then initialize the database:
+Then initialize the database and create the data/backup directories. **All three must exist before the systemd units below will start** — `ProtectSystem=strict` requires every `ReadWritePaths=` target to already exist so it can bind-mount it; a missing directory fails the whole service with `226/NAMESPACE`, not a normal app-level error:
 
 ```
 sudo -u clipthat npm run init-db
+sudo -u clipthat mkdir -p data/clips data/previews backups
 ```
 
 ## 5. systemd services
