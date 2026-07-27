@@ -1,0 +1,20 @@
+[Unit]
+Description=ClipThat API + web dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=clipthat
+Group=clipthat
+WorkingDirectory=/opt/clipthat
+ExecStart=/usr/bin/node api/server.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/clipthat/data /opt/clipthat/backups
+
+[Install]
+WantedBy=multi-user.target

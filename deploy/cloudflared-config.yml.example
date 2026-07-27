@@ -1,0 +1,9 @@
+# Copy to ~/.cloudflared/config.yml on the VM (as the user running cloudflared)
+# and replace TUNNEL_ID and the hostname.
+tunnel: TUNNEL_ID
+credentials-file: /home/clipthat/.cloudflared/TUNNEL_ID.json
+
+ingress:
+  - hostname: clips.yourdomain.com
+    service: http://localhost:3000
+  - service: http_status:404

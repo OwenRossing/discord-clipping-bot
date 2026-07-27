@@ -1,0 +1,9 @@
+[Unit]
+Description=ClipThat expired-clip cleanup
+
+[Service]
+Type=oneshot
+User=clipthat
+Group=clipthat
+WorkingDirectory=/opt/clipthat
+ExecStart=/usr/bin/node scripts/cleanupExpired.js
