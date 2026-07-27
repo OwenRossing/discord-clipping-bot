@@ -186,12 +186,20 @@ test('platform controls require an environment owner and audit premium, limit, a
     const headers = { Cookie:cookie, Origin:base, 'Content-Type':'application/json', 'X-CSRF-Token':csrfToken };
     const missingReason = await fetch(`${base}/api/platform/servers/guild`, { method:'PATCH', headers, body:JSON.stringify({ plan:'premium', storage_quota_bytes:2097152, max_clip_seconds:120, max_retention_days:365, max_buffer_minutes:20, suspended:true }) });
     assert.equal(missingReason.status, 400);
+    // Changing plan snaps storage/max-clip-length to that plan's defaults, ignoring whatever was submitted for those two fields alongside the plan change.
     const updated = await fetch(`${base}/api/platform/servers/guild`, { method:'PATCH', headers, body:JSON.stringify({ plan:'premium', storage_quota_bytes:2097152, max_clip_seconds:120, max_retention_days:365, max_buffer_minutes:20, suspended:true, suspension_reason:'Manual review' }) });
     assert.equal(updated.status, 200);
     const body = (await updated.json()).server;
-    assert.equal(body.plan, 'premium'); assert.equal(body.suspended, true); assert.equal(body.max_clip_seconds, 120);
+    assert.equal(body.plan, 'premium'); assert.equal(body.suspended, true);
+    assert.equal(body.storage_quota_bytes, 10_737_418_240); assert.equal(body.max_clip_seconds, 3600);
     assert.equal(db.prepare("SELECT buffer_size_minutes FROM servers WHERE guild_id='guild'").get().buffer_size_minutes, 20);
     assert.equal(db.prepare("SELECT COUNT(*) count FROM platform_activity WHERE guild_id='guild'").get().count > 0, true);
+
+    // Re-saving on the *same* plan lets the owner fine-tune storage/max-clip-length explicitly.
+    const tuned = await fetch(`${base}/api/platform/servers/guild`, { method:'PATCH', headers, body:JSON.stringify({ plan:'premium', storage_quota_bytes:2097152, max_clip_seconds:120, max_retention_days:365, max_buffer_minutes:20, suspended:true, suspension_reason:'Manual review' }) });
+    assert.equal(tuned.status, 200);
+    const tunedBody = (await tuned.json()).server;
+    assert.equal(tunedBody.storage_quota_bytes, 2097152); assert.equal(tunedBody.max_clip_seconds, 120);
 
     const restored = await fetch(`${base}/api/platform/servers/guild`, { method:'PATCH', headers, body:JSON.stringify({ plan:'free', storage_quota_bytes:1073741824, max_clip_seconds:1800, max_retention_days:3650, max_buffer_minutes:30, suspended:false, suspension_reason:'' }) });
     assert.equal(restored.status, 200);

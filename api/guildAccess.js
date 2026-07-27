@@ -5,6 +5,7 @@ const config = loadConfig();
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const memberCache = new Map();
 const roleCache = new Map();
+const guildCache = new Map();
 
 function liveVerificationEnabled() {
   return process.env.LIVE_GUILD_AUTH === 'true' || process.env.NODE_ENV === 'production';
@@ -53,8 +54,9 @@ async function resolveGuildAccess(req, guildId, options = {}) {
   const fetchImpl = options.fetchImpl || fetch;
   const member = await cached(memberCache, `${guildId}:${req.user.userId}`, () => discordJson(`/guilds/${encodeURIComponent(guildId)}/members/${encodeURIComponent(req.user.userId)}`, fetchImpl));
   if (!member) return { guildId, member:false, isOwner:false, canManage:false, delegated:false, verified:true };
-  const server = db.prepare('SELECT owner_id FROM servers WHERE guild_id=? AND bot_present=1').get(guildId);
-  const isOwner = server?.owner_id === req.user.userId;
+  const guild = await cached(guildCache, guildId, () => discordJson(`/guilds/${encodeURIComponent(guildId)}`, fetchImpl));
+  const isOwner = Boolean(guild?.owner_id) && guild.owner_id === req.user.userId;
+  if (guild?.owner_id) db.prepare('UPDATE servers SET owner_id=? WHERE guild_id=?').run(guild.owner_id, guildId);
   const delegated = Boolean(db.prepare('SELECT 1 FROM server_admins WHERE guild_id=? AND user_id=?').get(guildId, req.user.userId));
   const roles = await cached(roleCache, guildId, () => discordJson(`/guilds/${encodeURIComponent(guildId)}/roles`, fetchImpl));
   let permissions = 0n;
@@ -73,6 +75,7 @@ async function attachGuildAccess(req, guildId, options) {
 function clearGuildAccessCache() {
   memberCache.clear();
   roleCache.clear();
+  guildCache.clear();
 }
 
 module.exports = { CACHE_TTL_MS, liveVerificationEnabled, sessionAccess, resolveGuildAccess, attachGuildAccess, clearGuildAccessCache };

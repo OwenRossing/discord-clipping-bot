@@ -9,18 +9,23 @@ export const skeleton = (count = 3) => `<div class="skeleton-grid">${Array.from(
 export function clipCard(clip) {
   const speakers = clip.users_involved?.map(speaker => speaker.name).join(', ') || 'No speakers';
   const waveform = clip.current_revision?.waveform_url;
+  const menuItems = [
+    `<a href="/clips/${encodeURIComponent(clip.id)}" data-route>${clip.capabilities?.canEditAudio ? 'Edit' : 'Open'}</a>`,
+    clip.capabilities?.canRename ? '<button data-action="rename" type="button">Rename</button>' : '',
+    clip.my_participation?.can_remove ? '<button data-action="remove-self" type="button">Remove me</button>' : '',
+    clip.my_participation?.can_clone ? '<button data-action="clone-self" type="button">Add me (new cut)</button>' : '',
+    clip.capabilities?.canRestore ? '<button data-action="restore" type="button">Restore</button>' : '',
+    clip.capabilities?.canDelete ? '<button class="danger-text" data-action="trash" type="button">Move to trash</button>' : ''
+  ].filter(Boolean).join('');
   return `<article class="clip-card" data-clip-id="${escapeHtml(clip.id)}">
     <button class="waveform-play" type="button" data-action="play" aria-label="Play ${escapeHtml(clip.title)}">
       ${waveform ? `<img src="${escapeHtml(waveform)}" loading="lazy" alt="">` : '<span class="wave-placeholder"></span>'}<i>&#9654;</i>
+      <span class="clip-duration">${formatDuration(clip.duration)}</span>
     </button>
-    <div class="clip-card-copy"><div class="clip-title-row"><h3>${escapeHtml(clip.title)}</h3>${clip.capabilities?.canRename ? `<button class="text-action" data-action="rename" type="button">Rename</button>` : ''}</div><p>${escapeHtml(speakers)} &middot; ${formatDuration(clip.duration)} &middot; ${escapeHtml(relativeTime(clip.created_at))}</p></div>
+    <div class="clip-card-copy"><h3>${escapeHtml(clip.title)}</h3><p>${escapeHtml(relativeTime(clip.created_at))} &middot; ${escapeHtml(speakers)}</p></div>
     <div class="clip-menu">
-      <a class="button secondary" href="/clips/${encodeURIComponent(clip.id)}" data-route>${clip.capabilities?.canEditAudio ? 'Edit' : 'Open'}</a>
-      ${clip.my_participation?.can_remove ? '<button class="button secondary" data-action="remove-self" type="button">Remove me</button>' : ''}
-      ${clip.my_participation?.can_clone ? '<button class="button secondary" data-action="clone-self" type="button">Add me (new cut)</button>' : ''}
       ${clip.capabilities?.canFavorite ? `<button class="icon-control ${clip.favorited ? 'selected' : ''}" data-action="favorite" type="button" aria-label="${clip.favorited ? 'Remove favorite' : 'Favorite'}">${clip.favorited ? '&#9733;' : '&#9734;'}</button>` : ''}
-      ${clip.capabilities?.canDelete ? '<button class="icon-control danger-icon" data-action="trash" type="button" aria-label="Move to trash">&#9003;</button>' : ''}
-      ${clip.capabilities?.canRestore ? '<button class="button" data-action="restore" type="button">Restore</button>' : ''}
+      ${menuItems ? `<details class="clip-overflow"><summary class="icon-control" aria-label="More actions">&#8230;</summary><div class="clip-overflow-menu">${menuItems}</div></details>` : ''}
     </div>
   </article>`;
 }

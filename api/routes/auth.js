@@ -72,8 +72,8 @@ router.get('/discord/callback', async (req, res) => {
     const roleAdminGuilds = guilds.filter(g => g.owner || (BigInt(g.permissions) & 0x20n) !== 0n).map(g => g.id);
     await regenerate(req);
     req.session.user = { userId: user.id, username: user.global_name || user.username, avatar: user.avatar, guilds: guilds.map(g => ({ id: g.id, name: g.name, icon: g.icon, owner: Boolean(g.owner), permissions: g.permissions })), guildIds: guilds.map(g => g.id), ownerGuilds, roleAdminGuilds };
-    const updateServer = db.prepare('UPDATE servers SET name=?, icon_hash=?, owner_id=COALESCE(owner_id, ?), profile_updated_at=? WHERE guild_id=?');
-    for (const guild of guilds) updateServer.run(guild.name, guild.icon || null, guild.owner ? user.id : null, Date.now(), guild.id);
+    const updateServer = db.prepare('UPDATE servers SET name=?, icon_hash=?, owner_id=CASE WHEN ? THEN ? ELSE owner_id END, profile_updated_at=? WHERE guild_id=?');
+    for (const guild of guilds) updateServer.run(guild.name, guild.icon || null, guild.owner ? 1 : 0, user.id, Date.now(), guild.id);
     ensureCsrfToken(req);
     await save(req);
     res.redirect(returnTo);

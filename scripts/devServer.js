@@ -1,3 +1,4 @@
+require('dotenv').config();
 process.env.DEV_AUTH_ENABLED = 'true';
 
 if (!process.env.DEV_USER_ID || !process.env.DEV_GUILD_ID) {

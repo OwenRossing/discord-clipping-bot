@@ -90,7 +90,7 @@ router.get('/:guildId/overview', (req, res) => {
     consentConfigured: Boolean(row.onboarding_completed_at),
     hasClips: Number(counts.total || 0) > 0
   };
-  setup.complete = setup.botOnline && setup.clipsChannelConfigured && setup.consentConfigured;
+  setup.complete = setup.hasClips && setup.clipsChannelConfigured && setup.consentConfigured;
   res.json({ server:profile, runtime, setup, storage:{ usedBytes:guildUsage(guildId), quotaBytes:serverQuota(guildId) }, counts:{ total:Number(counts.total || 0), favorites:Number(counts.favorites || 0), trash:Number(counts.trash || 0) }, recent, favorites });
 });
 
@@ -104,6 +104,59 @@ router.get('/:guildId/export', (req, res) => {
   const payload = { exportedAt:new Date().toISOString(), server, clips, recordingPreferences:db.prepare('SELECT user_id,recording_allowed,updated_at FROM recording_preferences WHERE guild_id=?').all(guildId), activity:db.prepare('SELECT clip_id,actor_id,action,details,created_at FROM clip_activity WHERE guild_id=? ORDER BY created_at').all(guildId) };
   res.set('Content-Disposition', `attachment; filename="clipthat-${guildId}-export.json"`);
   res.type('application/json').send(JSON.stringify(payload, null, 2));
+});
+
+function guildMemberStats(guildId, limit = 500) {
+  const clips = db.prepare('SELECT users_involved FROM clips WHERE guild_id=? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ?').all(guildId, limit);
+  const names = new Map(), counts = new Map();
+  for (const clip of clips) for (const user of parseJson(clip.users_involved)) {
+    if (!user?.id) continue;
+    if (user.name && !names.has(user.id)) names.set(user.id, user.name);
+    counts.set(user.id, (counts.get(user.id) || 0) + 1);
+  }
+  return { names, counts };
+}
+
+router.get('/:guildId/members', (req, res) => {
+  const guildId = req.params.guildId;
+  if (!hasGuildAccess(req, guildId) || !isPlatformAdmin(req, guildId)) return res.status(403).json({ error:'Bot admin access required.' });
+  const { names, counts } = guildMemberStats(guildId);
+  const admins = db.prepare('SELECT user_id, added_by, created_at FROM server_admins WHERE guild_id=? ORDER BY created_at').all(guildId);
+  const adminIds = new Set(admins.map(row => row.user_id));
+  const preferences = db.prepare('SELECT user_id, recording_allowed, updated_at FROM recording_preferences WHERE guild_id=?').all(guildId);
+  const prefByUser = new Map(preferences.map(row => [row.user_id, row]));
+  const ids = new Set([...adminIds, ...prefByUser.keys(), ...names.keys()]);
+  const members = [...ids].map(id => {
+    const pref = prefByUser.get(id);
+    return {
+      id,
+      name: names.get(id) || id,
+      isAdmin: adminIds.has(id),
+      consent: pref ? (pref.recording_allowed ? 'allowed' : 'blocked') : 'default',
+      consentUpdatedAt: pref?.updated_at || null,
+      clipCount: counts.get(id) || 0
+    };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+  res.json({ members, canManageAdmins: isGuildOwner(req, guildId) });
+});
+
+router.get('/:guildId/audit', (req, res) => {
+  const guildId = req.params.guildId;
+  if (!hasGuildAccess(req, guildId) || !isPlatformAdmin(req, guildId)) return res.status(403).json({ error:'Bot admin access required.' });
+  const { names } = guildMemberStats(guildId);
+  const rows = db.prepare(`SELECT clip_activity.id, clip_activity.actor_id, clip_activity.action, clip_activity.details, clip_activity.created_at, clips.title
+    FROM clip_activity LEFT JOIN clips ON clips.id=clip_activity.clip_id
+    WHERE clip_activity.guild_id=? ORDER BY clip_activity.created_at DESC LIMIT 100`).all(guildId);
+  const activity = rows.map(row => ({
+    id: row.id,
+    actorId: row.actor_id,
+    actorName: (row.actor_id && names.get(row.actor_id)) || row.actor_id || 'Unknown',
+    action: row.action,
+    clipTitle: row.title || 'Deleted clip',
+    details: parseJson(row.details, {}),
+    createdAt: row.created_at
+  }));
+  res.json({ activity });
 });
 
 router.delete('/:guildId/data', (req, res) => {

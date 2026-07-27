@@ -3,12 +3,15 @@ import { clipCard, escapeHtml, formatBytes, formatDuration, iconMarkup, relative
 
 const state = {
   me: null, mode: null, servers: { installed: [], installable: [] }, server: null,
-  overview: null, clips: [], cursor: null, total: 0, trash: false, search: '',
+  overview: null, clips: [], cursor: null, total: 0, search: '',
+  clipView: localStorage.getItem('clipthat.clipView') || 'grid',
+  settingsSaved: null, settingsOnboarded: true,
   audioClip: null, searchTimer: null, requestId: 0, routeController: null, libraryController: null,
   editor: null, textResolve:null, confirmResolve:null
 };
-const elements = Object.fromEntries(['welcome','appShell','serverRail','openServerPicker','mobileServerPicker','desktopNav','mobileNav','view','theme','accountButton','accountDialog','accountContent','serverDialog','serverChoices','renameDialog','renameForm','renameTitle','renameLabel','renameInput','renameSubmit','confirmDialog','confirmTitle','confirmMessage','confirmButton','player','playerToggle','playerTitle','playerServer','playerSeek','playerTime','playerClose','persistentAudio','toastRegion'].map(id => [id, document.getElementById(id)]));
-const navItems = [{ key:'home', label:'Home' }, { key:'library', label:'Library' }, { key:'favorites', label:'Favorites' }, { key:'manage', label:'Manage', admin:true }];
+const elements = Object.fromEntries(['welcome','appShell','serverRail','openServerPicker','sidebarIdentity','sidebarNav','sidebarServerSection','sidebarTheme','mobileServerPicker','mobileNav','view','accountButton','accountDialog','accountContent','serverDialog','serverDialogTitle','serverChoices','renameDialog','renameForm','renameTitle','renameLabel','renameInput','renameSubmit','confirmDialog','confirmTitle','confirmMessage','confirmButton','player','playerToggle','playerTitle','playerServer','playerSeek','playerTime','playerClose','persistentAudio','toastRegion'].map(id => [id, document.getElementById(id)]));
+const navItems = [{ key:'home', label:'Home' }, { key:'clips', label:'Clips' }, { key:'settings', label:'Settings', admin:true }];
+const serverSectionItems = [{ key:'members', label:'Members' }, { key:'audit', label:'Audit Log' }, { key:'integrations', label:'Integrations', soon:true }];
 
 function toast(message, kind = '') {
   const node = document.createElement('div');
@@ -17,25 +20,46 @@ function toast(message, kind = '') {
 }
 function route() {
   if (location.pathname === '/platform') return { type:'platform' };
-  let match = location.pathname.match(/^\/servers\/([^/]+)(?:\/([^/]+))?$/);
-  if (match) return { type:'server', guildId:decodeURIComponent(match[1]), view:match[2] || 'home' };
+  let match = location.pathname.match(/^\/servers\/([^/]+)(?:\/([^/]+)(?:\/([^/]+))?)?$/);
+  if (match) return { type:'server', guildId:decodeURIComponent(match[1]), view:match[2] || 'home', tab:match[3] || null };
   match = location.pathname.match(/^\/clips\/([^/]+)$/);
   return match ? { type:'clip', clipId:decodeURIComponent(match[1]) } : { type:'root' };
 }
 function editorDirty() { return Boolean(state.editor && JSON.stringify(state.editor.saved) !== JSON.stringify(state.editor.form)); }
+function settingsSnapshot() {
+  return {
+    clips_channel_id: document.getElementById('clipsChannel')?.value ?? '',
+    consent_mode: document.getElementById('consentMode')?.value ?? '',
+    buffer_size_minutes: document.getElementById('bufferMinutes')?.value ?? '',
+    retention_days: document.getElementById('retentionDays')?.value ?? ''
+  };
+}
+function settingsDirty() {
+  if (!document.getElementById('settingsForm')) return false;
+  if (!state.settingsOnboarded) return true;
+  return JSON.stringify(state.settingsSaved) !== JSON.stringify(settingsSnapshot());
+}
+function markSettingsDirty() {
+  const bar = document.getElementById('settingsBar'); if (bar) bar.hidden = !settingsDirty();
+}
+function hasUnsavedChanges() { return editorDirty() || settingsDirty(); }
 async function go(url, options = {}) {
   if (typeof options === 'boolean') options = { replace:options };
-  if (!options.force && editorDirty() && !await confirmAction('Discard unsaved changes?', 'Your unsaved trim and mix changes will be lost.', 'Discard', true)) return false;
+  if (!options.force && hasUnsavedChanges() && !await confirmAction('Discard unsaved changes?', 'Your unsaved changes will be lost.', 'Discard', true)) return false;
   state.editor = null;
   if (options.replace) history.replaceState({}, '', url); else history.pushState({}, '', url);
   await renderRoute();
   return true;
 }
 function currentServer(id = route().guildId) { return state.servers.installed.find(server => server.id === id); }
-function navUrl(key) { return `/servers/${encodeURIComponent(state.server.id)}/${key}`; }
+function navUrl(key, tab) { return `/servers/${encodeURIComponent(state.server.id)}/${key}${tab ? `/${tab}` : ''}`; }
 function routeFetch(url, options = {}) { return apiFetch(url, { ...options, signal:options.signal || state.routeController?.signal }); }
 function avatar(user) { return user.avatarUrl ? `<img src="${escapeHtml(user.avatarUrl)}" alt="">` : `<span>${escapeHtml((user.username || '?')[0].toUpperCase())}</span>`; }
-function setAccent(server) { document.documentElement.style.setProperty('--server-accent', server?.accent || '#7c8cff'); }
+function setAccent(server) {
+  const hue = Number((server?.accent || '').match(/hsl\((\d+)/)?.[1] ?? 231);
+  const light = document.body.classList.contains('light');
+  document.documentElement.style.setProperty('--server-accent', `hsl(${hue} ${light ? '68% 42%' : '72% 62%'})`);
+}
 function brandName(server = state.server) { return String(server?.botDisplayName || 'ClipThat').trim() || 'ClipThat'; }
 function brandInitials(name = brandName()) { return name.split(/\s+/).slice(0, 2).map(part => part[0]).join('').toUpperCase().slice(0, 2) || 'CT'; }
 function setBrand(server = state.server) {
@@ -72,7 +96,7 @@ function showWelcome() {
   setBrand(null);
   elements.appShell.hidden = true; elements.welcome.hidden = false;
   const local = state.mode?.developmentLogin ? '<form id="devLoginForm" class="dev-login-form"><label>Temporary local code<input id="devLoginCode" autocomplete="one-time-code" required></label><button class="button secondary" type="submit">Open local server</button></form>' : '';
-  elements.welcome.innerHTML = `<div class="welcome-card"><div class="brand-lockup"><span class="vault-logo">CT</span><strong>ClipThat</strong></div><div><p class="eyebrow">YOUR MOMENTS, IN CONTEXT</p><h1>Open your server's clips.</h1><p class="welcome-copy">Sign in to see only the Discord servers you belong to. ClipThat stores a secure session cookie, never your Discord access token.</p></div><div class="welcome-actions"><a class="button discord-button" href="/api/auth/login?return_to=${encodeURIComponent(location.pathname)}">Continue with Discord</a>${local}</div><p class="privacy-note">Private by default &middot; <a href="/privacy.html">Privacy</a> &middot; <a href="/terms.html">Terms</a></p></div>`;
+  elements.welcome.innerHTML = `<div class="welcome-card"><div class="brand-lockup"><span class="vault-logo">CT</span><strong>ClipThat</strong></div><div><p class="eyebrow">YOUR CLIPS, IN CONTEXT</p><h1>Open your server's clips.</h1><p class="welcome-copy">Sign in to see only the Discord servers you belong to. ClipThat stores a secure session cookie, never your Discord access token.</p></div><div class="welcome-actions"><a class="button discord-button" href="/api/auth/login?return_to=${encodeURIComponent(location.pathname)}">Continue with Discord</a>${local}</div><p class="privacy-note">Private by default &middot; <a href="/privacy.html">Privacy</a> &middot; <a href="/terms.html">Terms</a></p></div>`;
 }
 
 function showStartupError(error) {
@@ -80,6 +104,10 @@ function showStartupError(error) {
   elements.welcome.innerHTML = `<div class="welcome-card error-welcome"><div class="brand-lockup"><span class="vault-logo">!</span><strong>ClipThat</strong></div><div><p class="eyebrow">CONNECTION PROBLEM</p><h1>Could not open ClipThat.</h1><p class="welcome-copy">${escapeHtml(error.message)}</p></div><button class="button" data-action="retry-app" type="button">Try again</button></div>`;
 }
 
+function identityMarkup(interactive = true) {
+  const premium = state.server.plan === 'premium';
+  return `${iconMarkup(state.server)}<span><small>${escapeHtml(brandName())}</small><strong>${escapeHtml(state.server.name)}</strong></span><span class="plan-label ${premium ? '' : 'free'}">${premium ? 'Premium' : 'Free'}</span>${interactive ? '<b aria-hidden="true">&#8964;</b>' : ''}`;
+}
 function renderShell() {
   elements.welcome.hidden = true; elements.appShell.hidden = false;
   elements.serverRail.innerHTML = state.servers.installed.map(server => { const active = server.id === state.server?.id; return `<a href="/servers/${encodeURIComponent(server.id)}/home" data-route class="server-button ${active ? 'active' : ''}" ${active ? 'aria-current="page"' : ''} aria-label="${escapeHtml(server.name)}" title="${escapeHtml(server.name)}">${iconMarkup(server)}${active ? '<i class="active-server-dot" aria-hidden="true"></i>' : ''}</a>`; }).join('');
@@ -87,17 +115,28 @@ function renderShell() {
   setBrand(state.server);
   if (!state.server) return;
   setAccent(state.server);
-  elements.mobileServerPicker.innerHTML = `${iconMarkup(state.server)}<span><small>${escapeHtml(brandName())}</small><strong>${escapeHtml(state.server.name)}</strong></span><b aria-hidden="true">&#8964;</b>`;
+  elements.mobileServerPicker.innerHTML = identityMarkup(true); elements.sidebarIdentity.innerHTML = identityMarkup(false);
   const current = route().view || (route().type === 'clip' ? '' : 'home');
-  const allowed = navItems.filter(item => !item.admin || state.server.capabilities.canManage);
+  const admin = state.server.capabilities.canManage;
+  const allowed = navItems.filter(item => !item.admin || admin);
   const markup = allowed.map(item => { const active = current === item.key; return `<a href="${navUrl(item.key)}" data-route class="${active ? 'active' : ''}" ${active ? 'aria-current="page"' : ''}>${escapeHtml(item.label)}</a>`; }).join('');
-  elements.desktopNav.innerHTML = markup; elements.mobileNav.innerHTML = markup;
+  elements.sidebarNav.innerHTML = markup; elements.mobileNav.innerHTML = markup;
+  elements.sidebarServerSection.hidden = !admin;
+  if (admin) elements.sidebarServerSection.innerHTML = `<p class="sidebar-section-label">Server</p>${serverSectionItems.map(item => item.soon
+    ? `<span class="sidebar-link disabled" aria-disabled="true">${escapeHtml(item.label)} <b class="soon-pill">Soon</b></span>`
+    : `<a href="${navUrl(item.key)}" data-route class="sidebar-link ${current === item.key ? 'active' : ''}" ${current === item.key ? 'aria-current="page"' : ''}>${escapeHtml(item.label)}</a>`).join('')}`;
 }
 
-function serverPicker() {
-  const installed = state.servers.installed.map(server => { const active = server.id === state.server?.id; return `<a class="server-choice ${active ? 'active' : ''}" href="/servers/${encodeURIComponent(server.id)}/home" data-route ${active ? 'aria-current="page"' : ''}>${iconMarkup(server)}<span><strong>${escapeHtml(server.name)}</strong><small>${active ? 'Current server' : 'Open library'}</small></span>${active ? '<b aria-hidden="true">✓</b>' : ''}</a>`; }).join('');
+function serverPicker(mode = 'switch') {
   const installable = state.servers.installable.map(server => `<button class="server-choice" type="button" data-install="${escapeHtml(server.id)}">${iconMarkup(server)}<span><strong>${escapeHtml(server.name)}</strong><small>Add ClipThat</small></span></button>`).join('');
-  elements.serverChoices.innerHTML = `<h3>Installed</h3>${installed || '<p class="empty-copy">No installed servers yet.</p>'}${installable ? `<h3>Available to add</h3>${installable}` : ''}`;
+  if (mode === 'add') {
+    elements.serverDialogTitle.textContent = 'Add a server';
+    elements.serverChoices.innerHTML = installable || '<p class="empty-copy">ClipThat is already in every server where you can manage it. Ask a server admin to add it from Discord.</p>';
+  } else {
+    const installed = state.servers.installed.map(server => { const active = server.id === state.server?.id; return `<a class="server-choice ${active ? 'active' : ''}" href="/servers/${encodeURIComponent(server.id)}/home" data-route ${active ? 'aria-current="page"' : ''}>${iconMarkup(server)}<span><strong>${escapeHtml(server.name)}</strong><small>${active ? 'Current server' : 'Open library'}</small></span>${active ? '<b aria-hidden="true">✓</b>' : ''}</a>`; }).join('');
+    elements.serverDialogTitle.textContent = 'Your servers';
+    elements.serverChoices.innerHTML = `<h3>Installed</h3>${installed || '<p class="empty-copy">No installed servers yet.</p>'}${installable ? `<h3>Available to add</h3>${installable}` : ''}`;
+  }
   elements.serverDialog.showModal();
 }
 
@@ -116,7 +155,7 @@ async function waitForInstall(guildId, button) {
     if (installed) { elements.serverDialog.close(); toast(`${installed.name} is ready.`); return go(`/servers/${encodeURIComponent(guildId)}/home`); }
   }
   button.disabled = false; button.querySelector('small').textContent = 'Add ClipThat';
-  toast('Installation is still pending. Reopen the server switcher to check again.', 'error');
+  toast('Installation is still pending. Reopen the add-a-server dialog to check again.', 'error');
 }
 
 function accountDialog() {
@@ -134,19 +173,32 @@ function statusMarkup(overview) {
 function shelf(title, clips, empty) {
   return `<section class="shelf"><div class="section-heading"><h2>${escapeHtml(title)}</h2></div>${clips.length ? `<div class="clip-grid">${clips.map(clip => clipCard(clip)).join('')}</div>` : `<div class="empty-panel"><p>${escapeHtml(empty)}</p></div>`}</section>`;
 }
+function serverPanel(overview) {
+  const admin = state.server.capabilities.canManage;
+  const percent = overview.storage.quotaBytes ? Math.min(100, overview.storage.usedBytes / overview.storage.quotaBytes * 100) : 0;
+  const nextStep = !admin ? '' : !overview.setup.complete
+    ? `<div class="home-panel-row"><h2>Next step</h2><ul class="home-checklist"><li class="${overview.setup.clipsChannelConfigured ? 'done' : ''}">Clips channel selected</li><li class="${overview.setup.consentConfigured ? 'done' : ''}">Recording privacy reviewed</li><li class="${overview.setup.hasClips ? 'done' : ''}">Create your first clip</li></ul><a class="text-action" href="${navUrl('settings')}" data-route>Open settings &rarr;</a></div>`
+    : `<div class="home-panel-row"><h2>Next step</h2><p>Everything's set up. <a href="${navUrl('settings')}" data-route>Open settings</a> anytime.</p></div>`;
+  return `<aside class="home-panel"><div class="home-panel-row">${statusMarkup(overview)}</div><div class="home-panel-row"><h2>Storage</h2><progress class="storage-meter" aria-label="Server storage used" max="100" value="${percent}">${Math.round(percent)}%</progress><p>${formatBytes(overview.storage.usedBytes)} of ${formatBytes(overview.storage.quotaBytes)} used</p></div>${nextStep}<div class="home-panel-row"><h2>Weekly Recap <b class="soon-pill">Soon</b></h2><p>A look back at your server's best clips, coming soon.</p></div></aside>`;
+}
 
 async function renderHome() {
   elements.view.innerHTML = skeleton(4);
   const overview = await routeFetch(`/api/servers/${encodeURIComponent(state.server.id)}/overview`); state.overview = overview;
-  const checklist = state.server.capabilities.canManage && !overview.setup.complete ? `<aside class="setup-card"><div><p class="eyebrow">ADMIN CHECKLIST</p><h2>Finish setting up this vault</h2></div><ul><li class="${overview.setup.botOnline ? 'done' : ''}">Bot connected</li><li class="${overview.setup.clipsChannelConfigured ? 'done' : ''}">Clips channel selected</li><li class="${overview.setup.consentConfigured ? 'done' : ''}">Recording privacy reviewed</li></ul><a class="button secondary" href="${navUrl('manage')}" data-route>Open settings</a></aside>` : '';
-  elements.view.innerHTML = `<section class="server-hero"><div><p class="eyebrow">${escapeHtml(state.server.name.toUpperCase())}</p><h1>Your server's moments.</h1><p>${overview.counts.total} clips saved · ${overview.counts.favorites} favorites</p></div>${statusMarkup(overview)}</section>${checklist}${shelf('Recent moments', overview.recent, 'New clips will appear here as soon as someone uses /clipthat.')}${shelf('Favorites', overview.favorites, 'Favorite the moments your server keeps coming back to.')}<div class="section-link"><a href="${navUrl('library')}" data-route>Browse all ${overview.counts.total} clips <span aria-hidden="true">&rarr;</span></a></div>`;
+  const recentGrid = overview.recent.length ? `<div class="clip-grid shelf">${overview.recent.map(clip => clipCard(clip)).join('')}</div>` : `<div class="empty-panel shelf"><p>New clips will appear here as soon as someone uses /clipthat.</p></div>`;
+  elements.view.innerHTML = `<section class="home-layout">${serverPanel(overview)}<div class="home-main"><h1>Recent clips</h1>${recentGrid}${shelf('Favorites', overview.favorites, 'Favorite the clips your server keeps coming back to.')}<div class="section-link"><a href="${navUrl('clips')}" data-route>Browse all ${overview.counts.total} clips <span aria-hidden="true">&rarr;</span></a></div></div></section>`;
 }
 
-function libraryHeading(view) {
+const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent || '');
+const searchShortcutLabel = isMac ? '&#8984;K' : 'Ctrl+K';
+const clipTabs = [{ key:'all', label:'All Clips' }, { key:'favorites', label:'Favorites' }, { key:'trash', label:'Trash', admin:true }];
+
+function clipsHeading(tab) {
   const admin = state.server.capabilities.canManage;
-  return `<section class="library-head"><div><p class="eyebrow">${view === 'favorites' ? 'SAVED FOR LATER' : 'YOUR ARCHIVE'}</p><h1>${view === 'favorites' ? 'Favorites' : state.trash ? 'Trash' : 'Library'}</h1><p id="libraryCount" class="muted">${state.total} moments</p></div><label class="search-box"><span aria-hidden="true">&#8981;</span><span class="sr-only">Search clips</span><input id="clipSearch" type="search" value="${escapeHtml(state.search)}" placeholder="Search titles or speakers" autocomplete="off"></label></section>${admin && view === 'library' ? `<div class="segmented" role="tablist"><button class="${!state.trash ? 'active' : ''}" data-action="show-active" role="tab" aria-selected="${!state.trash}" type="button">Active</button><button class="${state.trash ? 'active' : ''}" data-action="show-trash" role="tab" aria-selected="${state.trash}" type="button">Trash</button></div>` : ''}`;
+  const tabsMarkup = clipTabs.filter(item => !item.admin || admin).map(item => `<a class="clip-tab ${item.key === tab ? 'active' : ''}" href="${navUrl('clips', item.key === 'all' ? '' : item.key)}" data-route ${item.key === tab ? 'aria-current="page"' : ''}>${escapeHtml(item.label)}</a>`).join('');
+  return `<section class="clips-head"><h1>Clips</h1><label class="search-box"><span aria-hidden="true">&#8981;</span><span class="sr-only">Search clips</span><input id="clipSearch" type="search" value="${escapeHtml(state.search)}" placeholder="Search clips…" autocomplete="off"><kbd class="search-kbd">${searchShortcutLabel}</kbd></label></section><nav class="clip-tabs" aria-label="Clip filters">${tabsMarkup}</nav><div class="filter-bar"><button class="filter-chip" type="button" disabled>All time</button><button class="filter-chip" type="button" disabled>All speakers</button><button class="filter-chip" type="button" disabled>Has transcription</button><button class="filter-chip ghost" type="button" disabled>Clear</button><div class="filter-spacer"></div><button class="filter-chip" type="button" disabled>Newest</button><div class="view-toggle" role="group" aria-label="Layout"><button class="view-toggle-button ${state.clipView !== 'list' ? 'active' : ''}" data-action="view-grid" type="button" aria-label="Grid view">&#9638;</button><button class="view-toggle-button ${state.clipView === 'list' ? 'active' : ''}" data-action="view-list" type="button" aria-label="List view">&#9776;</button></div></div>`;
 }
-async function loadClips(view, reset = false) {
+async function loadClips(tab, reset = false) {
   if (reset) { state.clips = []; state.cursor = null; }
   state.libraryController?.abort();
   state.libraryController = new AbortController();
@@ -155,23 +207,27 @@ async function loadClips(view, reset = false) {
   const params = new URLSearchParams({ guild:state.server.id, limit:'24' });
   if (state.cursor) params.set('cursor', state.cursor);
   if (state.search) params.set('q', state.search);
-  if (view === 'favorites') params.set('favorite', '1');
-  if (state.trash) params.set('trash', '1');
+  if (tab === 'favorites') params.set('favorite', '1');
+  if (tab === 'trash') params.set('trash', '1');
   const data = await apiFetch(`/api/clips?${params}`, { signal:state.libraryController.signal });
   if (request !== state.requestId) return;
   state.clips.push(...data.clips); state.cursor = data.next_cursor; state.total = data.count;
-  renderClipGrid(view);
+  renderClipGrid();
 }
-function renderClipGrid(view) {
-  const count = document.getElementById('libraryCount'); if (count) count.textContent = `${state.total} moment${state.total === 1 ? '' : 's'}`;
+function renderClipGrid() {
+  const tab = route().tab || 'all';
   const grid = document.getElementById('clipGrid'); if (!grid) return;
-  grid.innerHTML = state.clips.length ? state.clips.map(clip => clipCard(clip)).join('') : `<div class="empty-panel wide"><h2>${state.search ? 'No matches' : state.trash ? 'Trash is empty' : 'No clips yet'}</h2><p>${state.search ? 'Try a shorter title or speaker name.' : 'Use /clipthat in Discord and it will appear here.'}</p></div>`;
+  grid.classList.toggle('list-view', state.clipView === 'list');
+  grid.innerHTML = state.clips.length ? state.clips.map(clip => clipCard(clip)).join('') : `<div class="empty-panel wide"><h2>${state.search ? 'No matches' : tab === 'trash' ? 'Trash is empty' : 'No clips yet'}</h2><p>${state.search ? 'Try a shorter title or speaker name.' : 'Use /clipthat in Discord and it will appear here.'}</p></div>`;
+  const status = document.getElementById('clipsStatus'); if (status) status.textContent = state.total ? `Showing ${state.clips.length} of ${state.total} clips` : '';
   const more = document.getElementById('loadMore'); if (more) more.hidden = !state.cursor;
 }
-async function renderLibrary(view) {
-  state.trash = state.trash && view === 'library' && state.server.capabilities.canManage;
-  elements.view.innerHTML = `${libraryHeading(view)}<div id="clipGrid" class="clip-grid">${skeleton(6)}</div><button id="loadMore" class="button secondary load-more" type="button" hidden>Load more</button>`;
-  await loadClips(view, true);
+async function renderClips(tab) {
+  if (tab === 'trash' && !state.server.capabilities.canManage) return go(navUrl('clips'), { replace:true, force:true });
+  elements.view.innerHTML = skeleton(4);
+  const overview = await routeFetch(`/api/servers/${encodeURIComponent(state.server.id)}/overview`); state.overview = overview;
+  elements.view.innerHTML = `<section class="home-layout">${serverPanel(overview)}<div class="home-main">${clipsHeading(tab)}<div id="clipGrid" class="clip-grid ${state.clipView === 'list' ? 'list-view' : ''}">${skeleton(6)}</div><p id="clipsStatus" class="clips-status"></p><button id="loadMore" class="button secondary load-more" type="button" hidden>Load more</button></div></section>`;
+  await loadClips(tab, true);
 }
 
 function editState(clip) {
@@ -190,7 +246,7 @@ async function renderEditor(clipId) {
   const server = currentServer(clip.guild_id); if (!server) return accessDenied();
   state.server = server; localStorage.setItem('clipthat.lastServer', server.id); renderShell();
   const form = editState(clip);
-  elements.view.innerHTML = `<a class="back-link" href="${navUrl('library')}" data-route>&larr; Back to library</a><section class="editor-head"><div><p class="eyebrow">CLIP EDITOR</p><div class="editable-title"><h1>${escapeHtml(clip.title)}</h1>${clip.capabilities.canRename ? '<button class="text-action" data-action="rename" type="button">Rename</button>' : ''}</div><p>${escapeHtml(clip.users_involved.map(user => user.name).join(', ') || 'No voices currently included')} · ${formatDuration(clip.duration)} · ${escapeHtml(relativeTime(clip.created_at))}</p></div><button class="button secondary" data-action="play" data-clip-id="${escapeHtml(clip.id)}" type="button">Play clip</button></section>${clip.my_participation?.source_present ? `<section class="participation-row" aria-label="Your voice in this clip"><span class="participation-label ${clip.my_participation.audible ? 'included' : 'excluded'}"><i aria-hidden="true"></i>${clip.my_participation.audible ? 'Voice included' : 'Voice not included'}</span><div class="participation-actions">${clip.my_participation.can_remove ? '<button class="text-action danger-text" data-action="remove-self" type="button">Remove my voice</button>' : ''}${clip.my_participation.can_clone ? '<button class="text-action" data-action="clone-self" type="button">Add in a new cut</button>' : ''}</div></section>` : ''}<section class="editor-card"><div class="editor-status"><div><h2>Mix and timing</h2><p id="dirtyMessage">Saved revision ${clip.current_revision?.revision_number ?? 0}</p></div><span id="dirtyPill" class="saved-pill">Saved</span></div>${clip.capabilities.canEditAudio ? editorForm(clip, form) : '<div class="empty-panel"><p>You can play and rename this clip. Only its creator or a bot admin can change the audio.</p></div>'}<div class="editor-actions">${clip.capabilities.canEditAudio ? '<button class="button secondary" data-action="reset-edit" type="button">Reset</button><button class="button secondary" data-action="preview-edit" type="button">Preview</button><button class="button" data-action="save-edit" type="button">Save revision</button>' : ''}${clip.capabilities.canDelete ? '<button class="button danger-button" data-action="trash" type="button">Move to trash</button>' : ''}${clip.capabilities.canRestore ? '<button class="button" data-action="restore" type="button">Restore clip</button>' : ''}</div></section>${clip.capabilities.canViewRevisions ? '<section class="revision-card"><button class="revision-toggle" data-action="load-revisions" type="button"><span><strong>Revision history</strong><small>Play or restore earlier versions</small></span><b>&darr;</b></button><div id="revisionList"></div></section>' : ''}`;
+  elements.view.innerHTML = `<a class="back-link" href="${navUrl('clips')}" data-route>&larr; Back to clips</a><section class="editor-head"><div><p class="eyebrow">CLIP EDITOR</p><div class="editable-title"><h1>${escapeHtml(clip.title)}</h1>${clip.capabilities.canRename ? '<button class="text-action" data-action="rename" type="button">Rename</button>' : ''}</div><p>${escapeHtml(clip.users_involved.map(user => user.name).join(', ') || 'No voices currently included')} · ${formatDuration(clip.duration)} · ${escapeHtml(relativeTime(clip.created_at))}</p></div><button class="button secondary" data-action="play" data-clip-id="${escapeHtml(clip.id)}" type="button">Play clip</button></section>${clip.my_participation?.source_present ? `<section class="participation-row" aria-label="Your voice in this clip"><span class="participation-label ${clip.my_participation.audible ? 'included' : 'excluded'}"><i aria-hidden="true"></i>${clip.my_participation.audible ? 'Voice included' : 'Voice not included'}</span><div class="participation-actions">${clip.my_participation.can_remove ? '<button class="text-action danger-text" data-action="remove-self" type="button">Remove my voice</button>' : ''}${clip.my_participation.can_clone ? '<button class="text-action" data-action="clone-self" type="button">Add in a new cut</button>' : ''}</div></section>` : ''}<section class="editor-card"><div class="editor-status"><div><h2>Mix and timing</h2><p id="dirtyMessage">Saved revision ${clip.current_revision?.revision_number ?? 0}</p></div><span id="dirtyPill" class="saved-pill">Saved</span></div>${clip.capabilities.canEditAudio ? editorForm(clip, form) : '<div class="empty-panel"><p>You can play and rename this clip. Only its creator or a bot admin can change the audio.</p></div>'}<div class="editor-actions">${clip.capabilities.canEditAudio ? '<button class="button secondary" data-action="reset-edit" type="button">Reset</button><button class="button secondary" data-action="preview-edit" type="button">Preview</button><button class="button" data-action="save-edit" type="button">Save revision</button>' : ''}${clip.capabilities.canDelete ? '<button class="button danger-button" data-action="trash" type="button">Move to trash</button>' : ''}${clip.capabilities.canRestore ? '<button class="button" data-action="restore" type="button">Restore clip</button>' : ''}</div></section>${clip.capabilities.canViewRevisions ? '<section class="revision-card"><button class="revision-toggle" data-action="load-revisions" type="button"><span><strong>Revision history</strong><small>Play or restore earlier versions</small></span><b>&darr;</b></button><div id="revisionList"></div></section>' : ''}`;
   state.editor = { clip, saved:editState(clip), form };
   markDirty();
 }
@@ -207,39 +263,68 @@ function markDirty() {
 }
 function editPayload() { const { clip, form } = state.editor; return { start_trim:form.start, end_trim:form.end, user_mutes:form.mutes, user_volumes:form.volumes, base_revision_id:clip.current_revision_id }; }
 
-async function renderManage() {
+async function renderSettings() {
   if (!state.server.capabilities.canManage) return accessDenied();
   elements.view.innerHTML = skeleton(3);
   const settings = await routeFetch(`/api/settings/${encodeURIComponent(state.server.id)}`);
-  let channels = [], admins = null;
-  let channelsError = null, adminsError = null;
+  let channels = [];
+  let channelsError = null;
   try { ({ channels } = await routeFetch(`/api/discord/${encodeURIComponent(state.server.id)}/channels`)); } catch (error) { if (error.code !== 'REQUEST_ABORTED') channelsError = error.message; else throw error; }
-  if (state.server.capabilities.isOwner) { try { ({ admins } = await routeFetch(`/api/admins/${encodeURIComponent(state.server.id)}`)); } catch (error) { if (error.code !== 'REQUEST_ABORTED') adminsError = error.message; else throw error; } }
   const percent = Math.min(100, settings.storage_quota_bytes ? settings.storage_used_bytes / settings.storage_quota_bytes * 100 : 0);
-  const onboarding = !settings.onboarding_completed_at ? '<div class="onboarding-note"><span>1 minute setup</span><strong>Review where clips go and how voice consent works.</strong><p>Saving these settings completes setup. You can change them at any time.</p></div>' : '';
-  const ownerTools = state.server.capabilities.isOwner ? `<section class="manage-card danger-zone"><div><h2>Server data</h2><p>Export metadata anytime. Permanent deletion removes clips, revisions, preferences, activity, and delegated admins.</p></div><a class="button secondary" href="/api/servers/${encodeURIComponent(state.server.id)}/export" download>Export metadata</a><button class="button danger-button" data-action="erase-server-data" type="button">Permanently erase server data</button></section>` : '';
+  const onboarding = !settings.onboarding_completed_at ? '<p class="onboarding-note"><span class="eyebrow">1 MINUTE SETUP</span>Review where clips go and how voice consent works below, then save to finish setup.</p>' : '';
+  const premium = settings.plan === 'premium';
+  const billingSection = `<div class="settings-section"><h2>Billing</h2><p class="muted">Current plan <span class="plan-label ${premium ? '' : 'free'}">${premium ? 'Premium' : 'Free'}</span></p><p class="muted">Free: 1 GiB storage, 5 minute clips. Premium: 10 GiB storage, 60 minute clips.</p><small>Contact the platform owner to change your plan.</small></div>`;
+  const ownerTools = state.server.capabilities.isOwner ? `<div class="settings-section danger"><h2>Server data</h2><p class="muted">Export metadata anytime. Permanent deletion removes clips, revisions, preferences, activity, and delegated admins.</p><a class="button secondary" href="/api/servers/${encodeURIComponent(state.server.id)}/export" download>Export metadata</a><button class="button danger-button" data-action="erase-server-data" type="button">Permanently erase server data</button></div>` : '';
   const channelNotice = channelsError ? `<p class="inline-error">Channels could not be refreshed: ${escapeHtml(channelsError)}</p>` : '';
-  const adminNotice = adminsError ? `<p class="inline-error">Admins could not be refreshed: ${escapeHtml(adminsError)}</p>` : '';
-  elements.view.innerHTML = `<section class="page-heading"><p class="eyebrow">SERVER CONTROL</p><h1>Manage ${escapeHtml(state.server.name)}</h1><p>Recording, retention, privacy, and delegated access in one place.</p></section>${onboarding}<div class="manage-grid"><form id="settingsForm" class="manage-card"><div><h2>Recording settings</h2><p>Changes apply to future clips.</p></div>${channelNotice}<label>Clips channel<select id="clipsChannel"><option value="">Use the default channel</option>${channels.map(channel => `<option value="${escapeHtml(channel.id)}" ${channel.id === settings.clips_channel_id ? 'selected' : ''}>#${escapeHtml(channel.name)}</option>`).join('')}</select></label><label>Voice consent<select id="consentMode"><option value="notice" ${settings.consent_mode === 'notice' ? 'selected' : ''}>Visible notice with opt-out</option><option value="explicit" ${settings.consent_mode === 'explicit' ? 'selected' : ''}>Explicit opt-in only</option></select><small>A notice is posted whenever recording starts. Members can always use /privacy block.</small></label><label>Rolling buffer<select id="bufferMinutes">${[15,20,25,30].map(value => `<option value="${value}" ${value === settings.buffer_size_minutes ? 'selected' : ''}>${value} minutes</option>`).join('')}</select></label><label>Clip retention<input id="retentionDays" type="number" min="1" max="3650" value="${settings.retention_days || 90}"><small>Favorited clips do not expire automatically.</small></label><button class="button" type="submit">${settings.onboarding_completed_at ? 'Save settings' : 'Save and finish setup'}</button></form><section class="manage-card"><div><h2>Storage</h2><p>${formatBytes(settings.storage_used_bytes)} of ${formatBytes(settings.storage_quota_bytes)} used.</p></div><progress class="storage-meter" aria-label="Server storage used" max="100" value="${percent}">${Math.round(percent)}%</progress><small>Old trash is removed after 30 days. Favorited clips remain until deliberately trashed.</small></section>${admins ? `<section class="manage-card"><div><h2>Bot admins</h2><p>Delegated admins do not need a Discord role.</p></div>${adminNotice}<form id="adminForm" class="inline-form"><label><span class="sr-only">Discord user ID</span><input id="adminId" inputmode="numeric" pattern="[0-9]{17,20}" placeholder="Discord user ID" required></label><button class="button" type="submit">Add</button></form><div id="adminList" class="admin-list">${admins.length ? admins.map(admin => `<div><span><strong>${escapeHtml(admin.user_id)}</strong><small>Added ${escapeHtml(relativeTime(admin.created_at))}</small></span><button class="icon-control danger-icon" data-remove-admin="${escapeHtml(admin.user_id)}" type="button" aria-label="Remove admin">&times;</button></div>`).join('') : '<p class="empty-copy">No delegated admins.</p>'}</div></section>` : adminNotice}${ownerTools}</div>`;
+  elements.view.innerHTML = `<section class="settings-page"><header class="settings-header"><h1>Settings</h1><p>Recording, retention, privacy, and delegated access.</p></header>${onboarding}<div class="settings-section"><h2>Recording</h2><p class="muted">Changes apply to future clips.</p>${channelNotice}<form id="settingsForm" class="settings-fields"><label>Clips channel<select id="clipsChannel"><option value="">Use the default channel</option>${channels.map(channel => `<option value="${escapeHtml(channel.id)}" ${channel.id === settings.clips_channel_id ? 'selected' : ''}>#${escapeHtml(channel.name)}</option>`).join('')}</select></label><label>Voice consent<select id="consentMode"><option value="notice" ${settings.consent_mode === 'notice' ? 'selected' : ''}>Visible notice with opt-out</option><option value="explicit" ${settings.consent_mode === 'explicit' ? 'selected' : ''}>Explicit opt-in only</option></select><small>A notice is posted whenever recording starts. Members can always use /privacy block.</small></label><label>Rolling buffer<select id="bufferMinutes">${[15,20,25,30].map(value => `<option value="${value}" ${value === settings.buffer_size_minutes ? 'selected' : ''}>${value} minutes</option>`).join('')}</select></label><label>Clip retention (days)<input id="retentionDays" type="number" min="1" max="3650" value="${settings.retention_days || 90}"><small>Favorited clips do not expire automatically.</small></label></form></div><div class="settings-section"><h2>Storage</h2><p class="muted">${formatBytes(settings.storage_used_bytes)} of ${formatBytes(settings.storage_quota_bytes)} used.</p><progress class="storage-meter" aria-label="Server storage used" max="100" value="${percent}">${Math.round(percent)}%</progress><small>Old trash is removed after 30 days. Favorited clips remain until deliberately trashed.</small></div>${billingSection}${ownerTools}</section><div id="settingsBar" class="settings-bar" hidden><span>${settings.onboarding_completed_at ? 'Unsaved changes' : 'Finish setup to start recording'}</span><button class="button secondary" type="button" data-action="revert-settings">Revert</button><button class="button" type="submit" form="settingsForm">${settings.onboarding_completed_at ? 'Save changes' : 'Save and finish setup'}</button></div>`;
   const bufferSelect = document.getElementById('bufferMinutes');
   const selectedBuffer = Math.min(settings.buffer_size_minutes, settings.max_buffer_minutes);
   bufferSelect.replaceChildren(...[5,10,15,20,25,30].filter(value => value <= settings.max_buffer_minutes).map(value => new Option(`${value} minutes`, value, value === selectedBuffer, value === selectedBuffer)));
   document.getElementById('retentionDays').max = settings.max_retention_days;
-  const headingCopy = elements.view.querySelector('.page-heading p:last-child');
-  headingCopy.insertAdjacentHTML('afterbegin', `<span class="plan-label">${settings.plan === 'premium' ? 'Premium' : 'Free'}</span> `);
-  if (settings.suspended) elements.view.querySelector('.page-heading').insertAdjacentHTML('afterend', `<div class="inline-error"><strong>Recording is paused.</strong> ${escapeHtml(settings.suspension_reason)}</div>`);
+  const headingCopy = elements.view.querySelector('.settings-header p');
+  headingCopy.insertAdjacentHTML('afterbegin', `<span class="plan-label ${settings.plan === 'premium' ? '' : 'free'}">${settings.plan === 'premium' ? 'Premium' : 'Free'}</span> `);
+  if (settings.suspended) elements.view.querySelector('.settings-header').insertAdjacentHTML('afterend', `<div class="inline-error"><strong>Recording is paused.</strong> ${escapeHtml(settings.suspension_reason)}</div>`);
+  state.settingsOnboarded = Boolean(settings.onboarding_completed_at);
+  state.settingsSaved = settingsSnapshot();
+  const settingsForm = document.getElementById('settingsForm');
+  settingsForm.addEventListener('input', markSettingsDirty);
+  settingsForm.addEventListener('change', markSettingsDirty);
+  markSettingsDirty();
+}
+
+async function renderMembers() {
+  if (!state.server.capabilities.canManage) return accessDenied();
+  elements.view.innerHTML = skeleton(3);
+  const { members, canManageAdmins } = await routeFetch(`/api/servers/${encodeURIComponent(state.server.id)}/members`);
+  const consentLabel = { allowed:'Allowed', blocked:'Blocked', default:'Not set' };
+  const rows = members.length ? members.map(member => `<div class="member-row"><span class="member-identity"><strong>${escapeHtml(member.name)}</strong><small>${escapeHtml(member.id)} &middot; ${member.clipCount} clip${member.clipCount === 1 ? '' : 's'}</small></span><span class="consent-pill consent-${member.consent}">${consentLabel[member.consent]}</span>${canManageAdmins ? `<label class="switch"><span class="sr-only">Bot admin for ${escapeHtml(member.name)}</span><input type="checkbox" data-member-admin="${escapeHtml(member.id)}" ${member.isAdmin ? 'checked' : ''}><i></i></label>` : `<span class="admin-flag">${member.isAdmin ? 'Admin' : ''}</span>`}</div>`).join('')
+    : '<p class="empty-copy">No known members yet. They show up here once they set a recording preference, appear in a clip, or are added as a bot admin.</p>';
+  elements.view.innerHTML = `<section class="settings-page"><header class="settings-header"><h1>Members</h1><p>Known members, their recording consent, and delegated admin access.</p></header><div class="settings-section"><p class="muted">Consent is set by each member with /privacy allow or /privacy block and can't be changed here.</p>${canManageAdmins ? `<form id="adminForm" class="inline-form"><label><span class="sr-only">Discord user ID</span><input id="adminId" inputmode="numeric" pattern="[0-9]{17,20}" placeholder="Discord user ID" required></label><button class="button" type="submit">Add as admin</button></form>` : ''}<div class="member-list">${rows}</div></div></section>`;
+}
+
+async function renderAuditLog() {
+  if (!state.server.capabilities.canManage) return accessDenied();
+  elements.view.innerHTML = skeleton(3);
+  const { activity } = await routeFetch(`/api/servers/${encodeURIComponent(state.server.id)}/audit`);
+  const rows = activity.length ? activity.map(entry => `<div><span><strong>${escapeHtml(entry.clipTitle)}</strong><small>${escapeHtml(entry.actorName)} &middot; ${escapeHtml(entry.action.replaceAll('_', ' '))}</small></span><time>${escapeHtml(relativeTime(entry.createdAt))}</time></div>`).join('') : '<p class="empty-copy">No activity yet.</p>';
+  elements.view.innerHTML = `<section class="settings-page"><header class="settings-header"><h1>Audit Log</h1><p>Renames, edits, favorites, and trash/restore actions on this server's clips.</p></header><div class="settings-section platform-audit">${rows}</div></section>`;
 }
 
 async function renderPlatform() {
   if (!state.me.platformOwner) return accessDenied();
   document.title = 'Platform controls · ClipThat';
   const platformNav = '<a href="/platform" data-route class="active" aria-current="page">Platform</a>';
-  elements.desktopNav.innerHTML = platformNav; elements.mobileNav.innerHTML = platformNav;
-  const identityCopy = elements.mobileServerPicker.querySelector('span:nth-child(2)');
-  if (identityCopy) identityCopy.innerHTML = '<small>CLIPTHAT</small><strong>Platform controls</strong>';
+  elements.sidebarNav.innerHTML = platformNav; elements.mobileNav.innerHTML = platformNav;
+  elements.sidebarServerSection.hidden = true;
+  for (const identity of [elements.mobileServerPicker, elements.sidebarIdentity]) {
+    const identityCopy = identity.querySelector('span:nth-child(2)');
+    if (identityCopy) identityCopy.innerHTML = '<small>CLIPTHAT</small><strong>Platform controls</strong>';
+    const planBadge = identity.querySelector('.plan-label');
+    if (planBadge) planBadge.hidden = true;
+  }
   elements.view.innerHTML = skeleton(4);
   const [data, audit] = await Promise.all([routeFetch('/api/platform/servers'), routeFetch('/api/platform/activity')]);
-  elements.view.innerHTML = `<section class="page-heading platform-heading"><p class="eyebrow">OWNER CONTROL</p><h1>Platform</h1><p>Plans, limits, and recording moderation. Every change is audited.</p></section><div class="platform-list">${data.servers.map(server => `<details class="platform-server ${server.suspended ? 'suspended' : ''}"><summary><span><strong>${escapeHtml(server.name)}</strong><small>${escapeHtml(server.guild_id)} · ${server.clip_count} clips · ${formatBytes(server.storage_used_bytes)}</small></span><span class="platform-badges"><b class="plan-label">${server.plan === 'premium' ? 'Premium' : 'Free'}</b>${server.suspended ? '<b class="paused-label">Paused</b>' : ''}</span></summary><form data-platform-guild="${escapeHtml(server.guild_id)}"><div class="platform-fields"><label>Plan<select name="plan"><option value="free" ${server.plan === 'free' ? 'selected' : ''}>Free</option><option value="premium" ${server.plan === 'premium' ? 'selected' : ''}>Premium</option></select></label><label>Storage (MiB)<input name="storage_mib" type="number" min="1" max="10485760" value="${Math.round(server.storage_quota_bytes / 1048576)}" required></label><label>Max clip (seconds)<input name="max_clip_seconds" type="number" min="5" max="1800" value="${server.max_clip_seconds}" required></label><label>Max retention (days)<input name="max_retention_days" type="number" min="1" max="3650" value="${server.max_retention_days}" required></label><label>Max buffer (minutes)<input name="max_buffer_minutes" type="number" min="5" max="30" value="${server.max_buffer_minutes}" required></label></div><label class="moderation-toggle"><input name="suspended" type="checkbox" ${server.suspended ? 'checked' : ''}><span>Pause new recording and clipping</span></label><label>Private moderation note<input name="suspension_reason" maxlength="500" value="${escapeHtml(server.suspension_reason)}" placeholder="Required while paused"></label><div class="form-footer"><small>${formatBytes(server.storage_used_bytes)} currently stored</small><button class="button" type="submit">Save controls</button></div></form></details>`).join('') || '<div class="empty-panel">No servers are installed.</div>'}</div>`;
+  elements.view.innerHTML = `<section class="page-heading platform-heading"><p class="eyebrow">OWNER CONTROL</p><h1>Platform</h1><p>Plans, limits, and recording moderation. Every change is audited.</p></section><div class="platform-list">${data.servers.map(server => `<details class="platform-server ${server.suspended ? 'suspended' : ''}"><summary><span><strong>${escapeHtml(server.name)}</strong><small>${escapeHtml(server.guild_id)} · ${server.clip_count} clips · ${formatBytes(server.storage_used_bytes)}</small></span><span class="platform-badges"><b class="plan-label">${server.plan === 'premium' ? 'Premium' : 'Free'}</b>${server.suspended ? '<b class="paused-label">Paused</b>' : ''}</span></summary><form data-platform-guild="${escapeHtml(server.guild_id)}"><div class="platform-fields"><label>Plan<select name="plan"><option value="free" ${server.plan === 'free' ? 'selected' : ''}>Free</option><option value="premium" ${server.plan === 'premium' ? 'selected' : ''}>Premium</option></select><small>Changing plan resets storage and max clip length to that plan's defaults (1 GiB/5 min free, 10 GiB/60 min premium). Save again on the same plan to fine-tune.</small></label><label>Storage (MiB)<input name="storage_mib" type="number" min="1" max="10485760" value="${Math.round(server.storage_quota_bytes / 1048576)}" required></label><label>Max clip (seconds)<input name="max_clip_seconds" type="number" min="5" max="3600" value="${server.max_clip_seconds}" required></label><label>Max retention (days)<input name="max_retention_days" type="number" min="1" max="3650" value="${server.max_retention_days}" required></label><label>Max buffer (minutes)<input name="max_buffer_minutes" type="number" min="5" max="30" value="${server.max_buffer_minutes}" required></label></div><label class="moderation-toggle"><input name="suspended" type="checkbox" ${server.suspended ? 'checked' : ''}><span>Pause new recording and clipping</span></label><label>Private moderation note<input name="suspension_reason" maxlength="500" value="${escapeHtml(server.suspension_reason)}" placeholder="Required while paused"></label><div class="form-footer"><small>${formatBytes(server.storage_used_bytes)} currently stored</small><button class="button" type="submit">Save controls</button></div></form></details>`).join('') || '<div class="empty-panel">No servers are installed.</div>'}</div>`;
   if (audit.activity.length) elements.view.insertAdjacentHTML('beforeend', `<section class="platform-audit"><div class="section-heading"><h2>Recent owner activity</h2></div>${audit.activity.slice(0, 20).map(item => `<div><span><strong>${escapeHtml(item.name || item.guild_id)}</strong><small>${escapeHtml(item.action.replaceAll('_', ' '))}</small></span><time>${escapeHtml(relativeTime(item.created_at))}</time></div>`).join('')}</section>`);
 }
 
@@ -272,8 +357,13 @@ async function renderRoute() {
   state.server = server; localStorage.setItem('clipthat.lastServer', server.id); renderShell();
   try {
     if (target.view === 'home') await renderHome();
-    else if (target.view === 'library' || target.view === 'favorites') await renderLibrary(target.view);
-    else if (target.view === 'manage') await renderManage();
+    else if (target.view === 'clips') await renderClips(target.tab || 'all');
+    else if (target.view === 'library') await go(navUrl('clips'), { replace:true, force:true });
+    else if (target.view === 'favorites') await go(navUrl('clips', 'favorites'), { replace:true, force:true });
+    else if (target.view === 'settings') await renderSettings();
+    else if (target.view === 'manage') await go(navUrl('settings'), { replace:true, force:true });
+    else if (target.view === 'members') await renderMembers();
+    else if (target.view === 'audit') await renderAuditLog();
     else await go(navUrl('home'), { replace:true, force:true });
     elements.view.focus({ preventScroll:true });
   } catch (error) {
@@ -301,9 +391,9 @@ async function clipAction(button) {
   }
   if (button.dataset.action === 'trash') {
     if (!await confirmAction('Move clip to trash?', 'An admin can restore it for 30 days.', 'Move to trash', true)) return;
-    await apiFetch(`/api/clips/${encodeURIComponent(id)}`, { method:'DELETE', body:JSON.stringify({ reason:'dashboard' }) }); toast('Moved to trash.'); await go(navUrl('library'), { force:true });
+    await apiFetch(`/api/clips/${encodeURIComponent(id)}`, { method:'DELETE', body:JSON.stringify({ reason:'dashboard' }) }); toast('Moved to trash.'); await go(navUrl('clips'), { force:true });
   }
-  if (button.dataset.action === 'restore') { await apiFetch(`/api/clips/${encodeURIComponent(id)}/restore`, { method:'POST', body:'{}' }); toast('Clip restored.'); await go(navUrl('library'), { force:true }); }
+  if (button.dataset.action === 'restore') { await apiFetch(`/api/clips/${encodeURIComponent(id)}/restore`, { method:'POST', body:'{}' }); toast('Clip restored.'); await go(navUrl('clips'), { force:true }); }
   if (button.dataset.action === 'remove-self') {
     if (!await confirmAction('Remove your voice?', 'This updates every shared revision and replaces the posted audio. Copies already downloaded cannot be recalled.', 'Remove my voice', true)) return;
     const updated = await apiFetch(`/api/clips/${encodeURIComponent(id)}/participants/me/remove`, { method:'POST', body:'{}' });
@@ -339,7 +429,14 @@ document.addEventListener('click', async event => {
   try {
     if (button.dataset.action === 'retry-app') return await init();
     if (button.dataset.action === 'retry-route') return await renderRoute();
-    if (button.id === 'loadMore') return await withButton(button, 'Loading…', () => loadClips(route().view));
+    if (button.dataset.action === 'revert-settings') {
+      if (!state.settingsSaved) return;
+      const fields = { clipsChannel:'clips_channel_id', consentMode:'consent_mode', bufferMinutes:'buffer_size_minutes', retentionDays:'retention_days' };
+      for (const [id, key] of Object.entries(fields)) { const field = document.getElementById(id); if (field) field.value = state.settingsSaved[key]; }
+      markSettingsDirty();
+      return;
+    }
+    if (button.id === 'loadMore') return await withButton(button, 'Loading…', () => loadClips(route().tab || 'all'));
     if (button.dataset.action === 'logout') { await withButton(button, 'Signing out…', () => apiFetch('/api/auth/logout', { method:'POST', body:'{}' })); location.assign('/'); }
     else if (button.dataset.action === 'open-servers') serverPicker();
     else if (['play','rename','favorite','trash','restore','remove-self','clone-self'].includes(button.dataset.action)) {
@@ -348,7 +445,12 @@ document.addEventListener('click', async event => {
       else if (button.dataset.action === 'favorite') { button.disabled = true; try { await clipAction(button); } finally { button.disabled = false; } }
       else await withButton(button, labels[button.dataset.action], () => clipAction(button));
     }
-    else if (button.dataset.action === 'show-active' || button.dataset.action === 'show-trash') { state.trash = button.dataset.action === 'show-trash'; renderLibrary('library'); }
+    else if (button.dataset.action === 'view-grid' || button.dataset.action === 'view-list') {
+      state.clipView = button.dataset.action === 'view-list' ? 'list' : 'grid';
+      localStorage.setItem('clipthat.clipView', state.clipView);
+      document.querySelectorAll('.view-toggle-button').forEach(node => node.classList.toggle('active', node.dataset.action === button.dataset.action));
+      document.getElementById('clipGrid')?.classList.toggle('list-view', state.clipView === 'list');
+    }
     else if (button.dataset.action === 'reset-edit') { state.editor.form = structuredClone(state.editor.saved); await renderEditor(state.editor.clip.id); }
     else if (button.dataset.action === 'preview-edit') await withButton(button, 'Rendering preview…', async () => { const data = await apiFetch(`/api/clips/${encodeURIComponent(state.editor.clip.id)}/previews`, { method:'POST', body:JSON.stringify(editPayload()), timeout:120_000 }); playClip({ ...state.editor.clip, audio_url:data.preview_url, title:`${state.editor.clip.title} · Preview` }); });
     else if (button.dataset.action === 'save-edit') await withButton(button, 'Saving revision…', async () => { const data = await apiFetch(`/api/clips/${encodeURIComponent(state.editor.clip.id)}/revisions`, { method:'POST', body:JSON.stringify(editPayload()), timeout:180_000 }); toast('New revision saved.'); state.editor = null; await renderEditor(data.clip.id); });
@@ -362,14 +464,25 @@ document.addEventListener('click', async event => {
       if (typed.trim() !== state.server.id) throw new Error('The server ID did not match. Nothing was deleted.');
       if (!await confirmAction('Permanently erase server data?', 'This removes every clip, revision, preference, activity record, and delegated admin. It cannot be undone.', 'Erase permanently', true)) return;
       await withButton(button, 'Erasing…', () => apiFetch(`/api/servers/${encodeURIComponent(state.server.id)}/data`, { method:'DELETE', body:JSON.stringify({ confirmation:typed.trim() }), timeout:120_000 }));
-      toast('Server clip data was permanently erased.'); await renderManage();
+      toast('Server clip data was permanently erased.'); await renderSettings();
     }
-    else if (button.dataset.removeAdmin) { await apiFetch(`/api/admins/${encodeURIComponent(state.server.id)}/${encodeURIComponent(button.dataset.removeAdmin)}`, { method:'DELETE', body:'{}' }); renderManage(); }
   } catch (error) { if (error.code !== 'REQUEST_ABORTED') toast(error.message, 'error'); button.disabled = false; }
 });
 
+elements.view.addEventListener('change', async event => {
+  const toggle = event.target.closest('[data-member-admin]'); if (!toggle) return;
+  const userId = toggle.dataset.memberAdmin; const checked = toggle.checked;
+  toggle.disabled = true;
+  try {
+    if (checked) await apiFetch(`/api/admins/${encodeURIComponent(state.server.id)}`, { method:'POST', body:JSON.stringify({ user_id:userId }) });
+    else await apiFetch(`/api/admins/${encodeURIComponent(state.server.id)}/${encodeURIComponent(userId)}`, { method:'DELETE', body:'{}' });
+    toast(checked ? 'Bot admin added.' : 'Bot admin removed.');
+  } catch (error) { toggle.checked = !checked; toast(error.message, 'error'); }
+  finally { toggle.disabled = false; }
+});
+
 elements.view.addEventListener('input', event => {
-  if (event.target.id === 'clipSearch') { clearTimeout(state.searchTimer); state.searchTimer = setTimeout(() => { state.search = event.target.value.trim(); loadClips(route().view, true).catch(error => { if (error.code !== 'REQUEST_ABORTED') toast(error.message, 'error'); }); }, 260); }
+  if (event.target.id === 'clipSearch') { clearTimeout(state.searchTimer); state.searchTimer = setTimeout(() => { state.search = event.target.value.trim(); loadClips(route().tab || 'all', true).catch(error => { if (error.code !== 'REQUEST_ABORTED') toast(error.message, 'error'); }); }, 260); }
   if (!state.editor) return;
   if (event.target.id === 'trimStart') { state.editor.form.start = Math.min(Number(event.target.value), state.editor.form.end - .1); event.target.value = state.editor.form.start; document.getElementById('startValue').textContent = `${state.editor.form.start.toFixed(1)}s`; markDirty(); }
   if (event.target.id === 'trimEnd') { state.editor.form.end = Math.max(Number(event.target.value), state.editor.form.start + .1); event.target.value = state.editor.form.end; document.getElementById('endValue').textContent = `${state.editor.form.end.toFixed(1)}s`; markDirty(); }
@@ -387,19 +500,19 @@ elements.view.addEventListener('keydown', event => {
 });
 elements.view.addEventListener('submit', async event => {
   event.preventDefault();
-  const button = event.target.querySelector('button[type="submit"]');
+  const button = event.target.querySelector('button[type="submit"]') || document.querySelector(`button[type="submit"][form="${event.target.id}"]`);
   try {
     if (event.target.dataset.platformGuild) {
       const form = event.target;
       await withButton(button, 'Saving...', () => apiFetch(`/api/platform/servers/${encodeURIComponent(form.dataset.platformGuild)}`, { method:'PATCH', body:JSON.stringify({ plan:form.elements.plan.value, storage_quota_bytes:Number(form.elements.storage_mib.value) * 1048576, max_clip_seconds:Number(form.elements.max_clip_seconds.value), max_retention_days:Number(form.elements.max_retention_days.value), max_buffer_minutes:Number(form.elements.max_buffer_minutes.value), suspended:form.elements.suspended.checked, suspension_reason:form.elements.suspension_reason.value }) }));
       toast('Platform controls saved.'); await renderPlatform(); return;
     }
-    if (event.target.id === 'settingsForm') { await withButton(button, 'Saving…', () => apiFetch(`/api/settings/${encodeURIComponent(state.server.id)}`, { method:'POST', body:JSON.stringify({ clips_channel_id:document.getElementById('clipsChannel').value, consent_mode:document.getElementById('consentMode').value, buffer_size_minutes:Number(document.getElementById('bufferMinutes').value), retention_days:Number(document.getElementById('retentionDays').value), complete_onboarding:true }) })); toast('Settings saved.'); await renderManage(); }
-    if (event.target.id === 'adminForm') { await withButton(button, 'Adding…', () => apiFetch(`/api/admins/${encodeURIComponent(state.server.id)}`, { method:'POST', body:JSON.stringify({ user_id:document.getElementById('adminId').value }) })); toast('Bot admin added.'); await renderManage(); }
+    if (event.target.id === 'settingsForm') { await withButton(button, 'Saving…', () => apiFetch(`/api/settings/${encodeURIComponent(state.server.id)}`, { method:'POST', body:JSON.stringify({ clips_channel_id:document.getElementById('clipsChannel').value, consent_mode:document.getElementById('consentMode').value, buffer_size_minutes:Number(document.getElementById('bufferMinutes').value), retention_days:Number(document.getElementById('retentionDays').value), complete_onboarding:true }) })); toast('Settings saved.'); await renderSettings(); }
+    if (event.target.id === 'adminForm') { await withButton(button, 'Adding…', () => apiFetch(`/api/admins/${encodeURIComponent(state.server.id)}`, { method:'POST', body:JSON.stringify({ user_id:document.getElementById('adminId').value }) })); toast('Bot admin added.'); await renderMembers(); }
   } catch (error) { toast(error.message, 'error'); }
 });
 
-elements.openServerPicker.onclick = serverPicker; elements.mobileServerPicker.onclick = serverPicker; elements.accountButton.onclick = accountDialog;
+elements.openServerPicker.onclick = () => serverPicker('add'); elements.mobileServerPicker.onclick = () => serverPicker('switch'); elements.accountButton.onclick = accountDialog;
 document.querySelectorAll('[data-close-dialog]').forEach(button => button.onclick = () => button.closest('dialog').close());
 elements.renameForm.addEventListener('submit', event => {
   event.preventDefault();
@@ -420,9 +533,15 @@ document.addEventListener('submit', async event => {
   try { await withButton(button, 'Signing in…', () => apiFetch('/api/auth/dev', { method:'POST', body:JSON.stringify({ code:document.getElementById('devLoginCode').value.trim() }) })); location.reload(); }
   catch (error) { toast(error.message, 'error'); }
 });
+window.addEventListener('keydown', event => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+    const search = document.getElementById('clipSearch'); if (!search) return;
+    event.preventDefault(); search.focus(); search.select();
+  }
+});
 window.addEventListener('popstate', renderRoute);
-window.addEventListener('beforeunload', event => { if (editorDirty()) { event.preventDefault(); event.returnValue = ''; } });
-elements.theme.onclick = () => { const light = !document.body.classList.contains('light'); document.body.classList.toggle('light', light); localStorage.setItem('clipthat.theme', light ? 'light' : 'dark'); };
+window.addEventListener('beforeunload', event => { if (hasUnsavedChanges()) { event.preventDefault(); event.returnValue = ''; } });
+elements.sidebarTheme.onclick = () => { const light = !document.body.classList.contains('light'); document.body.classList.toggle('light', light); localStorage.setItem('clipthat.theme', light ? 'light' : 'dark'); if (state.server) setAccent(state.server); };
 document.body.classList.toggle('light', localStorage.getItem('clipthat.theme') === 'light');
 elements.playerToggle.onclick = () => elements.persistentAudio.paused ? elements.persistentAudio.play() : elements.persistentAudio.pause();
 elements.playerClose.onclick = () => { elements.persistentAudio.pause(); elements.player.hidden = true; state.audioClip = null; };

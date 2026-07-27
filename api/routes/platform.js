@@ -7,6 +7,11 @@ const { guildUsage } = require('../storage');
 const router = express.Router();
 router.use(requireAuth, requirePlatformOwner);
 
+const PLAN_LIMITS = {
+  free: { storageQuotaBytes: 1_073_741_824, maxClipSeconds: 300 },
+  premium: { storageQuotaBytes: 10_737_418_240, maxClipSeconds: 3600 }
+};
+
 function integer(value, minimum, maximum, label) {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
@@ -52,10 +57,11 @@ router.patch('/servers/:guildId', (req, res, next) => {
     const body = req.body || {};
     const plan = ['free', 'premium'].includes(body.plan) ? body.plan : null;
     if (!plan) return res.status(400).json({ error:'Plan must be free or premium.', code:'INVALID_PLAN' });
+    const planChanged = plan !== (server.plan || 'free');
     const nextValues = {
       plan,
-      storageQuotaBytes:integer(body.storage_quota_bytes, 1_048_576, 10_995_116_277_760, 'Storage quota'),
-      maxClipSeconds:integer(body.max_clip_seconds, 5, 1800, 'Maximum clip duration'),
+      storageQuotaBytes:planChanged ? PLAN_LIMITS[plan].storageQuotaBytes : integer(body.storage_quota_bytes, 1_048_576, 10_995_116_277_760, 'Storage quota'),
+      maxClipSeconds:planChanged ? PLAN_LIMITS[plan].maxClipSeconds : integer(body.max_clip_seconds, 5, 3600, 'Maximum clip duration'),
       maxRetentionDays:integer(body.max_retention_days, 1, 3650, 'Maximum retention'),
       maxBufferMinutes:integer(body.max_buffer_minutes, 5, 30, 'Maximum buffer length'),
       suspended:Boolean(body.suspended),
