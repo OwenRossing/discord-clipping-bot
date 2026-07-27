@@ -192,7 +192,7 @@ async function showSettings(interaction) {
   return interaction.reply(ephemeral({ content:`**Recording settings**\nPlan: ${settings.plan === 'premium' ? 'Premium' : 'Free'}${settings.suspended_at ? ' · recording paused' : ''}\nBuffer: ${settings.buffer_size_minutes} minutes\nRetention: ${settings.retention_days} days\nMaximum clip: ${formatDuration(settings.max_clip_seconds || 1800)}\nVoice privacy: ${settings.consent_mode === 'explicit' ? 'explicit opt-in' : 'visible notice with opt-out'}\nClips channel: ${settings.clips_channel_id ? `<#${settings.clips_channel_id}>` : `#${config.bot.defaultClipsChannel}`}`, components:[row] }));
 }
 
-function playClipInChannel(state, clip) {
+async function playClipInChannel(state, clip) {
   const revision = playableRevision(clip);
   if (!revisionReady(clip, revision)) throw new Error('This clip is applying a voice privacy change. Try again shortly.');
   const player = createAudioPlayer();
@@ -201,6 +201,9 @@ function playClipInChannel(state, clip) {
   const cleanupPlayer = () => { if (playerCleaned) return; playerCleaned = true; subscription?.unsubscribe(); state.connection.rejoin({ selfMute:true }); };
   player.on('error', error => { log(`Voice playback failed for ${clip.id}: ${error.message}`); cleanupPlayer(); });
   state.connection.rejoin({ selfMute:false });
+  // rejoin() only sends the gateway unmute packet; it doesn't confirm Discord applied it.
+  // Playing immediately races the unmute, so short clips can get dropped server-side while still muted.
+  await new Promise(resolve => setTimeout(resolve, 400));
   player.play(createAudioResource(revision.audio_path));
   player.once(AudioPlayerStatus.Idle, cleanupPlayer);
 }
@@ -212,7 +215,7 @@ async function playInVoice(interaction) {
   const clip = db.prepare('SELECT * FROM clips WHERE id=? AND guild_id=? AND deleted_at IS NULL').get(clipId, interaction.guildId);
   if (!clip) return interaction.reply(ephemeral({ content:'This clip is no longer available.' }));
   await interaction.deferReply(ephemeral());
-  try { playClipInChannel(state, clip); }
+  try { await playClipInChannel(state, clip); }
   catch (error) { return interaction.editReply({ content: error.message }); }
   return interaction.editReply({ content:'Playing the clip in voice.' });
 }
@@ -362,7 +365,7 @@ const voicePlayback = setInterval(() => {
           if (!member || member.voice.channelId !== state.connection.joinConfig.channelId) { finish('rejected', 'You need to be in the voice channel with the bot to play a clip.'); continue; }
           const clip = db.prepare('SELECT * FROM clips WHERE id=? AND guild_id=? AND deleted_at IS NULL').get(request.clip_id, request.guild_id);
           if (!clip) { finish('error', 'This clip is no longer available.'); continue; }
-          playClipInChannel(state, clip);
+          await playClipInChannel(state, clip);
           finish('played', null);
         } catch (error) { finish('error', error.message); log(`Voice playback request ${request.id} failed: ${error.message}`); }
       }
