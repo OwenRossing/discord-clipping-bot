@@ -5,6 +5,7 @@ const { requireAuth, hasGuildAccess, isPlatformAdmin, isGuildOwner } = require('
 const clipsRouter = require('./clips');
 const { guildUsage, serverQuota, removeClipDirectory, removePreviewFile } = require('../storage');
 const { attachGuildAccess } = require('../guildAccess');
+const { isPlatformOwner } = require('../platformAccess');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -47,7 +48,7 @@ function serverProfile(req, row) {
 router.get('/', async (req, res, next) => {
   try {
     const candidates = db.prepare('SELECT * FROM servers WHERE bot_present=1 ORDER BY COALESCE(name, guild_id)').all()
-      .filter(row => req.user.guildIds?.includes(row.guild_id));
+      .filter(row => isPlatformOwner(req.user.userId) || req.user.guildIds?.includes(row.guild_id));
     await Promise.all(candidates.map(row => attachGuildAccess(req, row.guild_id)));
     const installedRows = candidates.filter(row => hasGuildAccess(req, row.guild_id));
     const installedIds = new Set(installedRows.map(row => row.guild_id));

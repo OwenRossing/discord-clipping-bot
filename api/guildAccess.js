@@ -1,5 +1,6 @@
 const db = require('./db');
 const { loadConfig } = require('../bot/utils');
+const { isPlatformOwner } = require('./platformAccess');
 
 const config = loadConfig();
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -12,6 +13,7 @@ function liveVerificationEnabled() {
 }
 
 function sessionAccess(req, guildId) {
+  if (isPlatformOwner(req.user?.userId)) return { guildId, member:true, isOwner:false, canManage:true, delegated:false, verified:false };
   const member = Boolean(req.user?.guildIds?.includes(guildId));
   const isOwner = member && Boolean(req.user?.ownerGuilds?.includes(guildId));
   const delegated = member && Boolean(db.prepare('SELECT 1 FROM server_admins WHERE guild_id=? AND user_id=?').get(guildId, req.user?.userId));
@@ -44,6 +46,7 @@ async function discordJson(path, fetchImpl) {
 
 async function resolveGuildAccess(req, guildId, options = {}) {
   const snapshot = sessionAccess(req, guildId);
+  if (isPlatformOwner(req.user?.userId)) return snapshot;
   if (!snapshot.member || req.user?.development || !liveVerificationEnabled()) return snapshot;
   if (!config.discord?.token) {
     const error = new Error('Discord access verification is not configured.');

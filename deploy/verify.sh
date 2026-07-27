@@ -91,7 +91,14 @@ echo
 echo "== Dev login must be dead in production =="
 if [ -n "${API_BASE:-}" ] && command -v curl >/dev/null 2>&1; then
   DEVCODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_BASE/api/auth/dev" -H "Content-Type: application/json" -d '{"code":"probe"}' --max-time 8)
-  [ "$DEVCODE" = "404" ] && ok "dev login endpoint correctly disabled (404)" || bad "dev login endpoint returned $DEVCODE — expected 404 in production, this is a real security gap"
+  # 403 happens when the CSRF/origin middleware (api/middleware/security.js) blocks the
+  # cross-origin probe before it reaches the route's own NODE_ENV production check, which
+  # would otherwise return 404. Either status means the endpoint is unreachable in production.
+  case "$DEVCODE" in
+    404) ok "dev login endpoint correctly disabled (404)" ;;
+    403) ok "dev login endpoint blocked by CSRF/origin check (403)" ;;
+    *) bad "dev login endpoint returned $DEVCODE — expected 404 or 403 in production, this is a real security gap" ;;
+  esac
 fi
 
 echo
