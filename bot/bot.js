@@ -192,15 +192,9 @@ async function showSettings(interaction) {
   return interaction.reply(ephemeral({ content:`**Recording settings**\nPlan: ${settings.plan === 'premium' ? 'Premium' : 'Free'}${settings.suspended_at ? ' · recording paused' : ''}\nBuffer: ${settings.buffer_size_minutes} minutes\nRetention: ${settings.retention_days} days\nMaximum clip: ${formatDuration(settings.max_clip_seconds || 1800)}\nVoice privacy: ${settings.consent_mode === 'explicit' ? 'explicit opt-in' : 'visible notice with opt-out'}\nClips channel: ${settings.clips_channel_id ? `<#${settings.clips_channel_id}>` : `#${config.bot.defaultClipsChannel}`}`, components:[row] }));
 }
 
-async function playInVoice(interaction) {
-  const state = active.get(interaction.guildId);
-  if (!state) return interaction.reply(ephemeral({ content:'The bot is not connected to voice.' }));
-  const clipId = interaction.customId.split(':')[1];
-  const clip = db.prepare('SELECT * FROM clips WHERE id=? AND guild_id=? AND deleted_at IS NULL').get(clipId, interaction.guildId);
-  if (!clip) return interaction.reply(ephemeral({ content:'This clip is no longer available.' }));
+function playClipInChannel(state, clip) {
   const revision = playableRevision(clip);
-  if (!revisionReady(clip, revision)) return interaction.reply(ephemeral({ content:'This clip is applying a voice privacy change. Try again shortly.' }));
-  await interaction.deferReply(ephemeral());
+  if (!revisionReady(clip, revision)) throw new Error('This clip is applying a voice privacy change. Try again shortly.');
   const player = createAudioPlayer();
   const subscription = state.connection.subscribe(player);
   let playerCleaned = false;
@@ -209,6 +203,17 @@ async function playInVoice(interaction) {
   state.connection.rejoin({ selfMute:false });
   player.play(createAudioResource(revision.audio_path));
   player.once(AudioPlayerStatus.Idle, cleanupPlayer);
+}
+
+async function playInVoice(interaction) {
+  const state = active.get(interaction.guildId);
+  if (!state) return interaction.reply(ephemeral({ content:'The bot is not connected to voice.' }));
+  const clipId = interaction.customId.split(':')[1];
+  const clip = db.prepare('SELECT * FROM clips WHERE id=? AND guild_id=? AND deleted_at IS NULL').get(clipId, interaction.guildId);
+  if (!clip) return interaction.reply(ephemeral({ content:'This clip is no longer available.' }));
+  await interaction.deferReply(ephemeral());
+  try { playClipInChannel(state, clip); }
+  catch (error) { return interaction.editReply({ content: error.message }); }
   return interaction.editReply({ content:'Playing the clip in voice.' });
 }
 
@@ -343,6 +348,28 @@ const discordSync = setInterval(() => {
   } catch (error) { log(`Discord sync queue failed: ${error.stack || error.message}`); }
 }, 5_000);
 discordSync.unref();
+const voicePlayback = setInterval(() => {
+  void (async () => {
+    try {
+      const pending = db.prepare("SELECT * FROM clip_playback_requests WHERE status='pending' LIMIT 5").all();
+      for (const request of pending) {
+        const finish = (status, message) => db.prepare('UPDATE clip_playback_requests SET status=?, message=?, handled_at=? WHERE id=?').run(status, message || null, Date.now(), request.id);
+        try {
+          const state = active.get(request.guild_id);
+          if (!state) { finish('rejected', "The bot isn't recording in a voice channel right now."); continue; }
+          const guild = client.guilds.cache.get(request.guild_id);
+          const member = guild ? await guild.members.fetch(request.requested_by).catch(() => null) : null;
+          if (!member || member.voice.channelId !== state.connection.joinConfig.channelId) { finish('rejected', 'You need to be in the voice channel with the bot to play a clip.'); continue; }
+          const clip = db.prepare('SELECT * FROM clips WHERE id=? AND guild_id=? AND deleted_at IS NULL').get(request.clip_id, request.guild_id);
+          if (!clip) { finish('error', 'This clip is no longer available.'); continue; }
+          playClipInChannel(state, clip);
+          finish('played', null);
+        } catch (error) { finish('error', error.message); log(`Voice playback request ${request.id} failed: ${error.message}`); }
+      }
+    } catch (error) { log(`Voice playback queue failed: ${error.stack || error.message}`); }
+  })();
+}, 2_000);
+voicePlayback.unref();
 function shutdown() { for (const [guildId, state] of active) { state.recorder.stop(); state.connection.destroy(); setRuntime(guildId, null); } client.destroy(); }
 process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
 

@@ -26,6 +26,60 @@ function encodeSilence(duration, output) {
   const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-t', String(Math.max(0.1, Number(duration) || 0.1)), '-c:a', 'libmp3lame', '-q:a', '2', output];
   return new Promise((resolve, reject) => execFile(process.env.FFMPEG_PATH || bundledFfmpeg || 'ffmpeg', args, PROCESS_OPTIONS, error => error ? reject(error) : resolve()));
 }
+function probeDuration(input) {
+  return new Promise((resolve, reject) => {
+    execFile(process.env.FFMPEG_PATH || bundledFfmpeg || 'ffmpeg', ['-hide_banner', '-i', input, '-f', 'null', '-'], PROCESS_OPTIONS, (error, stdout, stderr) => {
+      const text = String(stderr || error?.stderr || '');
+      const match = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(text);
+      if (!match) return reject(new Error('Could not read audio duration — the file may not be a valid audio file.'));
+      resolve(Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]));
+    });
+  });
+}
+function transcodeUpload(input, output) {
+  const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-i', input, '-vn', '-ac', '2', '-ar', '48000', '-c:a', 'libmp3lame', '-q:a', '2', output];
+  return new Promise((resolve, reject) => execFile(process.env.FFMPEG_PATH || bundledFfmpeg || 'ffmpeg', args, PROCESS_OPTIONS, error => error ? reject(error) : resolve()));
+}
+async function createUploadedClip({ guildId, createdBy, sourcePath, title }) {
+  const serverLimits = db.prepare('SELECT suspended_at,suspension_reason,max_clip_seconds FROM servers WHERE guild_id=?').get(guildId);
+  if (serverLimits?.suspended_at) throw new Error(`Recording is paused for this server${serverLimits.suspension_reason ? `: ${serverLimits.suspension_reason}` : '.'}`);
+  const duration = await probeDuration(sourcePath);
+  if (duration > Number(serverLimits?.max_clip_seconds || 1800)) throw new Error(`This server limits clips to ${serverLimits?.max_clip_seconds || 1800} seconds.`);
+  const timestamp = Date.now(), id = `${timestamp}`;
+  db.prepare('INSERT OR IGNORE INTO servers(guild_id, created_at) VALUES(?, ?)').run(guildId, timestamp);
+  assertQuota(guildId, Math.ceil(duration * 32000));
+  const dir = path.resolve(process.cwd(), config.storage.clipsDir, guildId, id);
+  if (!inside(clipsRoot, dir)) throw new Error('Unsafe clip storage path.');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const cleanTitle = typeof title === 'string' && title.trim() ? Array.from(title.trim()).slice(0, 80).join('') : `Clip ${id}`;
+    const output = path.join(dir, 'original.mp3');
+    await transcodeUpload(sourcePath, output);
+    const waveform = path.join(dir, 'original.waveform.png');
+    try { await renderWaveform(output, waveform); } catch (error) { console.warn(JSON.stringify({ event:'waveform_failed', clipId:id, error:error.message })); }
+    const server = db.prepare('SELECT retention_days FROM servers WHERE guild_id=?').get(guildId);
+    const expiresAt = timestamp + ((server?.retention_days || config.bot.defaultRetentionDays) * 86400000);
+    db.transaction(() => {
+      db.prepare(`INSERT INTO clips
+        (id, guild_id, timestamp, duration, users_involved, created_by, original_audio_path,
+         edited_audio_path, start_trim, end_trim, user_mutes, user_volumes, created_at,
+         expires_at, favorited, title)
+        VALUES (?, ?, ?, ?, '[]', ?, ?, NULL, 0, ?, '{}', '{}', ?, ?, 0, ?)`)
+        .run(id, guildId, timestamp, duration, createdBy, dir, duration, timestamp, expiresAt, cleanTitle);
+      const revision = db.prepare(`INSERT INTO clip_revisions
+        (clip_id, revision_number, start_trim, end_trim, user_mutes, user_volumes, audio_path, waveform_path, created_by, created_at, participant_version)
+        VALUES (?, 0, 0, ?, '{}', '{}', ?, ?, ?, ?, 0)`)
+        .run(id, duration, output, fs.existsSync(waveform) ? waveform : null, createdBy, timestamp);
+      db.prepare('UPDATE clips SET current_revision_id=? WHERE id=?').run(Number(revision.lastInsertRowid), id);
+    })();
+    const storageBytes = refreshClipStorage(id, dir);
+    return { id, title: cleanTitle, duration, storageBytes };
+  } catch (error) {
+    db.prepare('DELETE FROM clips WHERE id=?').run(id);
+    try { removeClipDirectory(dir); } catch {}
+    throw error;
+  }
+}
 async function createClip({ guildId, createdBy, duration, audio, members = [], title }) {
   const serverLimits = db.prepare('SELECT suspended_at,suspension_reason,max_clip_seconds FROM servers WHERE guild_id=?').get(guildId);
   if (serverLimits?.suspended_at) throw new Error(`Recording is paused for this server${serverLimits.suspension_reason ? `: ${serverLimits.suspension_reason}` : '.'}`);
@@ -78,4 +132,4 @@ async function createClip({ guildId, createdBy, duration, audio, members = [], t
     throw error;
   }
 }
-module.exports = { createClip, encode, encodeSilence, renderWaveform };
+module.exports = { createClip, createUploadedClip, encode, encodeSilence, renderWaveform };

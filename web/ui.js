@@ -11,6 +11,7 @@ export function clipCard(clip) {
   const waveform = clip.current_revision?.waveform_url;
   const menuItems = [
     `<a href="/clips/${encodeURIComponent(clip.id)}" data-route>${clip.capabilities?.canEditAudio ? 'Edit' : 'Open'}</a>`,
+    '<button data-action="play-in-vc" type="button">Play in voice channel</button>',
     clip.capabilities?.canRename ? '<button data-action="rename" type="button">Rename</button>' : '',
     clip.my_participation?.can_remove ? '<button data-action="remove-self" type="button">Remove me</button>' : '',
     clip.my_participation?.can_clone ? '<button data-action="clone-self" type="button">Add me (new cut)</button>' : '',
@@ -20,7 +21,7 @@ export function clipCard(clip) {
   return `<article class="clip-card" data-clip-id="${escapeHtml(clip.id)}">
     <button class="waveform-play" type="button" data-action="play" aria-label="Play ${escapeHtml(clip.title)}">
       ${waveform ? `<img src="${escapeHtml(waveform)}" loading="lazy" alt="">` : '<span class="wave-placeholder"></span>'}<i>&#9654;</i>
-      <span class="clip-duration">${formatDuration(clip.duration)}</span>
+      <span class="clip-duration">${formatDuration(clip.end_trim - clip.start_trim)}</span>
     </button>
     <div class="clip-card-copy"><h3>${escapeHtml(clip.title)}</h3><p>${escapeHtml(relativeTime(clip.created_at))} &middot; ${escapeHtml(speakers)}</p></div>
     <div class="clip-menu">

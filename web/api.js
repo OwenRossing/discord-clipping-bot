@@ -6,7 +6,7 @@ export function getCsrfToken() { return csrfToken; }
 export async function apiFetch(url, options = {}) {
   const method = String(options.method || 'GET').toUpperCase();
   const unsafe = !['GET', 'HEAD', 'OPTIONS'].includes(method);
-  const headers = { ...(options.body ? { 'Content-Type':'application/json' } : {}), ...(unsafe && csrfToken ? { 'X-CSRF-Token':csrfToken } : {}), ...(options.headers || {}) };
+  const headers = { ...(options.body && !(options.body instanceof FormData) ? { 'Content-Type':'application/json' } : {}), ...(unsafe && csrfToken ? { 'X-CSRF-Token':csrfToken } : {}), ...(options.headers || {}) };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new DOMException('Request timed out', 'TimeoutError')), options.timeout ?? 15_000);
   const abort = () => controller.abort(options.signal?.reason);

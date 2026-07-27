@@ -9,7 +9,7 @@ const state = {
   audioClip: null, searchTimer: null, requestId: 0, routeController: null, libraryController: null,
   editor: null, textResolve:null, confirmResolve:null
 };
-const elements = Object.fromEntries(['welcome','appShell','serverRail','openServerPicker','sidebarIdentity','sidebarNav','sidebarServerSection','sidebarTheme','mobileServerPicker','mobileNav','view','accountButton','accountDialog','accountContent','serverDialog','serverDialogTitle','serverChoices','renameDialog','renameForm','renameTitle','renameLabel','renameInput','renameSubmit','confirmDialog','confirmTitle','confirmMessage','confirmButton','player','playerToggle','playerTitle','playerServer','playerSeek','playerTime','playerClose','persistentAudio','toastRegion'].map(id => [id, document.getElementById(id)]));
+const elements = Object.fromEntries(['welcome','appShell','serverRail','openServerPicker','sidebarIdentity','sidebarNav','sidebarServerSection','sidebarTheme','mobileServerPicker','mobileNav','view','accountButton','accountDialog','accountContent','serverDialog','serverDialogTitle','serverChoices','renameDialog','renameForm','renameTitle','renameLabel','renameInput','renameSubmit','uploadDialog','uploadForm','uploadFile','uploadTitle','uploadSubmit','confirmDialog','confirmTitle','confirmMessage','confirmButton','player','playerToggle','playerTitle','playerServer','playerSeek','playerTime','playerClose','persistentAudio','toastRegion'].map(id => [id, document.getElementById(id)]));
 const navItems = [{ key:'home', label:'Home' }, { key:'clips', label:'Clips' }, { key:'settings', label:'Settings', admin:true }];
 const serverSectionItems = [{ key:'members', label:'Members' }, { key:'audit', label:'Audit Log' }, { key:'integrations', label:'Integrations', soon:true }];
 
@@ -196,7 +196,7 @@ const clipTabs = [{ key:'all', label:'All Clips' }, { key:'favorites', label:'Fa
 function clipsHeading(tab) {
   const admin = state.server.capabilities.canManage;
   const tabsMarkup = clipTabs.filter(item => !item.admin || admin).map(item => `<a class="clip-tab ${item.key === tab ? 'active' : ''}" href="${navUrl('clips', item.key === 'all' ? '' : item.key)}" data-route ${item.key === tab ? 'aria-current="page"' : ''}>${escapeHtml(item.label)}</a>`).join('');
-  return `<section class="clips-head"><h1>Clips</h1><label class="search-box"><span aria-hidden="true">&#8981;</span><span class="sr-only">Search clips</span><input id="clipSearch" type="search" value="${escapeHtml(state.search)}" placeholder="Search clips…" autocomplete="off"><kbd class="search-kbd">${searchShortcutLabel}</kbd></label></section><nav class="clip-tabs" aria-label="Clip filters">${tabsMarkup}</nav><div class="filter-bar"><button class="filter-chip" type="button" disabled>All time</button><button class="filter-chip" type="button" disabled>All speakers</button><button class="filter-chip" type="button" disabled>Has transcription</button><button class="filter-chip ghost" type="button" disabled>Clear</button><div class="filter-spacer"></div><button class="filter-chip" type="button" disabled>Newest</button><div class="view-toggle" role="group" aria-label="Layout"><button class="view-toggle-button ${state.clipView !== 'list' ? 'active' : ''}" data-action="view-grid" type="button" aria-label="Grid view">&#9638;</button><button class="view-toggle-button ${state.clipView === 'list' ? 'active' : ''}" data-action="view-list" type="button" aria-label="List view">&#9776;</button></div></div>`;
+  return `<section class="clips-head"><h1>Clips</h1><label class="search-box"><span aria-hidden="true">&#8981;</span><span class="sr-only">Search clips</span><input id="clipSearch" type="search" value="${escapeHtml(state.search)}" placeholder="Search clips…" autocomplete="off"><kbd class="search-kbd">${searchShortcutLabel}</kbd></label><button class="button secondary" data-action="open-upload" type="button">Upload</button></section><nav class="clip-tabs" aria-label="Clip filters">${tabsMarkup}</nav><div class="filter-bar"><button class="filter-chip" type="button" disabled>All time</button><button class="filter-chip" type="button" disabled>All speakers</button><button class="filter-chip" type="button" disabled>Has transcription</button><button class="filter-chip ghost" type="button" disabled>Clear</button><div class="filter-spacer"></div><button class="filter-chip" type="button" disabled>Newest</button><div class="view-toggle" role="group" aria-label="Layout"><button class="view-toggle-button ${state.clipView !== 'list' ? 'active' : ''}" data-action="view-grid" type="button" aria-label="Grid view">&#9638;</button><button class="view-toggle-button ${state.clipView === 'list' ? 'active' : ''}" data-action="view-list" type="button" aria-label="List view">&#9776;</button></div></div>`;
 }
 async function loadClips(tab, reset = false) {
   if (reset) { state.clips = []; state.cursor = null; }
@@ -403,6 +403,16 @@ async function clipAction(button) {
     const data = await apiFetch(`/api/clips/${encodeURIComponent(id)}/participants/me/clone`, { method:'POST', body:'{}' });
     toast(data.existing ? 'Opened your existing personal cut.' : 'Your personal cut is ready.'); await go(`/clips/${encodeURIComponent(data.clip.id)}`, { force:true });
   }
+  if (button.dataset.action === 'play-in-vc') {
+    const { request_id } = await apiFetch(`/api/clips/${encodeURIComponent(id)}/play-in-vc`, { method:'POST', body:'{}' });
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      const result = await apiFetch(`/api/clips/${encodeURIComponent(id)}/play-in-vc/${request_id}`);
+      if (result.status === 'played') return toast('Playing in the voice channel.');
+      if (result.status === 'rejected' || result.status === 'error') return toast(result.message || 'Could not play the clip in voice.', 'error');
+    }
+    toast('Still waiting on the bot — try again in a moment.', 'error');
+  }
 }
 
 function setTrim(kind, rawValue) {
@@ -439,8 +449,9 @@ document.addEventListener('click', async event => {
     if (button.id === 'loadMore') return await withButton(button, 'Loading…', () => loadClips(route().tab || 'all'));
     if (button.dataset.action === 'logout') { await withButton(button, 'Signing out…', () => apiFetch('/api/auth/logout', { method:'POST', body:'{}' })); location.assign('/'); }
     else if (button.dataset.action === 'open-servers') serverPicker();
-    else if (['play','rename','favorite','trash','restore','remove-self','clone-self'].includes(button.dataset.action)) {
-      const labels = { rename:'Renaming…', favorite:'Saving…', trash:'Moving…', restore:'Restoring…', 'remove-self':'Removing voice…', 'clone-self':'Creating cut…' };
+    else if (button.dataset.action === 'open-upload') { elements.uploadForm.reset(); elements.uploadDialog.showModal(); }
+    else if (['play','rename','favorite','trash','restore','remove-self','clone-self','play-in-vc'].includes(button.dataset.action)) {
+      const labels = { rename:'Renaming…', favorite:'Saving…', trash:'Moving…', restore:'Restoring…', 'remove-self':'Removing voice…', 'clone-self':'Creating cut…', 'play-in-vc':'Sending…' };
       if (button.dataset.action === 'play') await clipAction(button);
       else if (button.dataset.action === 'favorite') { button.disabled = true; try { await clipAction(button); } finally { button.disabled = false; } }
       else await withButton(button, labels[button.dataset.action], () => clipAction(button));
@@ -520,6 +531,21 @@ elements.renameForm.addEventListener('submit', event => {
   elements.renameDialog.close(); resolve?.(elements.renameInput.value.trim());
 });
 elements.renameDialog.addEventListener('close', () => { const resolve = state.textResolve; state.textResolve = null; resolve?.(null); });
+elements.uploadForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  const file = elements.uploadFile.files[0];
+  if (!file) return;
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('guild_id', state.server.id);
+  if (elements.uploadTitle.value.trim()) formData.append('title', elements.uploadTitle.value.trim());
+  try {
+    await withButton(elements.uploadSubmit, 'Uploading…', () => apiFetch('/api/clips', { method:'POST', body:formData, timeout:120_000 }));
+    elements.uploadDialog.close();
+    toast('Clip uploaded.');
+    await loadClips(route().tab || 'all', true);
+  } catch (error) { toast(error.message, 'error'); }
+});
 elements.confirmDialog.addEventListener('click', event => {
   const button = event.target.closest('[data-confirm-value]'); if (!button) return;
   const resolve = state.confirmResolve; state.confirmResolve = null;

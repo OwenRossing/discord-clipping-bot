@@ -262,7 +262,23 @@ function platformManagementSchema(database) {
   `);
 }
 
-const migrations = [createBaseSchema, expandClipSchema, personalizeServerSchema, publicBetaSchema, participantPrivacySchema, botIdentitySchema, platformManagementSchema];
+function voicePlaybackSchema(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS clip_playback_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      clip_id TEXT NOT NULL,
+      guild_id TEXT NOT NULL,
+      requested_by TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      message TEXT,
+      created_at INTEGER NOT NULL,
+      handled_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_playback_requests_pending ON clip_playback_requests(status, guild_id);
+  `);
+}
+
+const migrations = [createBaseSchema, expandClipSchema, personalizeServerSchema, publicBetaSchema, participantPrivacySchema, botIdentitySchema, platformManagementSchema, voicePlaybackSchema];
 
 function initializeDatabase(database) {
   database.pragma('foreign_keys = ON');

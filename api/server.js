@@ -37,6 +37,7 @@ app.use(express.json({ limit: '128kb', strict: true }));
 app.use(session({ store: sessionStore, name: process.env.NODE_ENV === 'production' ? '__Host-clipthat.sid' : 'clipthat.sid', secret: process.env.SESSION_SECRET || 'development-only-secret', resave: false, saveUninitialized: false, cookie: { secure: process.env.NODE_ENV === 'production', httpOnly: true, sameSite: 'lax', path: '/', maxAge: 7 * 86400000 } }));
 app.use('/api', (req, res, next) => { res.setHeader('Cache-Control', 'private, no-store'); next(); });
 app.use('/api', (req, res, next) => {
+  if (req.method === 'POST' && req.path === '/clips' && req.is('multipart/form-data')) return next();
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) && !req.is('application/json')) return res.status(415).json({ error:'State-changing API requests must use application/json.', code:'JSON_REQUIRED' });
   next();
 });

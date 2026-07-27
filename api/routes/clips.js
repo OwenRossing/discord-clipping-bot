@@ -1,10 +1,12 @@
 const crypto = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const express = require('express');
+const multer = require('multer');
 const db = require('../db');
 const { requireAuth, isPlatformAdmin, hasGuildAccess, clipCapabilities } = require('../middleware/auth');
-const { encode, renderWaveform } = require('../../bot/clipManager');
+const { encode, createUploadedClip, renderWaveform } = require('../../bot/clipManager');
 const { loadConfig } = require('../../bot/utils');
 const { runAudioJob, checkPreviewRate } = require('../audioJobs');
 const { assertQuota, refreshClipStorage, clipsRoot, inside } = require('../storage');
@@ -18,6 +20,46 @@ const TRASH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const previewRoot = path.resolve(process.cwd(), path.dirname(config.storage.clipsDir), 'previews');
 
 router.use(requireAuth);
+
+const UPLOAD_DIR = path.join(os.tmpdir(), 'clipthat-uploads');
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+const ALLOWED_UPLOAD_EXTENSIONS = new Set(['.mp3', '.wav', '.flac', '.m4a', '.ogg', '.aac']);
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: UPLOAD_DIR,
+    filename: (req, file, cb) => cb(null, `${crypto.randomUUID()}${path.extname(file.originalname).toLowerCase()}`)
+  }),
+  limits: { fileSize: 100 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (!ALLOWED_UPLOAD_EXTENSIONS.has(ext)) return cb(new Error(`Unsupported file type. Allowed: ${[...ALLOWED_UPLOAD_EXTENSIONS].join(', ')}`));
+    cb(null, true);
+  }
+});
+
+router.post('/', (req, res, next) => {
+  upload.single('file')(req, res, async error => {
+    if (error) {
+      error.status = error.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+      if (error.code === 'LIMIT_FILE_SIZE') error.message = 'That file is too large (100 MiB limit).';
+      return next(error);
+    }
+    try {
+      if (!req.file) { const missing = new Error('No audio file was uploaded.'); missing.status = 400; throw missing; }
+      const guildId = String(req.body.guild_id || '');
+      if (guildId) await attachGuildAccess(req, guildId);
+      if (!guildId || !hasGuildAccess(req, guildId)) { const denied = new Error('Server access denied.'); denied.status = 403; throw denied; }
+      const clip = await createUploadedClip({ guildId, createdBy: req.user.userId, sourcePath: req.file.path, title: req.body.title });
+      logActivity({ id: clip.id, guild_id: guildId }, req.user.userId, 'upload', { title: clip.title });
+      res.status(201).json(serializeClip(req, getClip(clip.id)));
+    } catch (uploadError) {
+      if (!uploadError.status) uploadError.status = 400;
+      next(uploadError);
+    } finally {
+      if (req.file?.path) fs.unlink(req.file.path, () => {});
+    }
+  });
+});
 
 function json(value, fallback) {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
@@ -338,7 +380,7 @@ async function createRevision(req, res, compatibility = false) {
           clip.id, nextNumber, state.start, state.end, JSON.stringify(state.userMutes), JSON.stringify(state.userVolumes), output, fs.existsSync(waveform) ? waveform : null, req.user.userId, Date.now(), state.participantVersion
         );
       const id = Number(result.lastInsertRowid);
-      db.prepare(`UPDATE clips SET current_revision_id=?, edited_audio_path=?, start_trim=?, end_trim=?, user_mutes=?, user_volumes=? WHERE id=?`)
+      db.prepare(`UPDATE clips SET current_revision_id=?, edited_audio_path=?, start_trim=?, end_trim=?, user_mutes=?, user_volumes=?, discord_sync_pending=1 WHERE id=?`)
         .run(id, output, state.start, state.end, JSON.stringify(state.userMutes), JSON.stringify(state.userVolumes), clip.id);
       logActivity(clip, req.user.userId, 'save', { revisionId: id, revisionNumber: nextNumber, baseRevisionId });
       return id;
@@ -405,7 +447,7 @@ router.post('/:id/revisions/:revisionId/restore', (req, res) => {
   if (!revision) return res.status(404).json({ error: 'Revision not found.' });
   if (!revisionReady(clip, revision)) return res.status(409).json({ error:'That revision predates the latest voice privacy change and cannot be restored yet.', code:'PRIVACY_REVISION_STALE' });
   db.transaction(() => {
-    db.prepare(`UPDATE clips SET current_revision_id=?, edited_audio_path=?, start_trim=?, end_trim=?, user_mutes=?, user_volumes=? WHERE id=?`)
+    db.prepare(`UPDATE clips SET current_revision_id=?, edited_audio_path=?, start_trim=?, end_trim=?, user_mutes=?, user_volumes=?, discord_sync_pending=1 WHERE id=?`)
       .run(revision.id, revision.audio_path, revision.start_trim, revision.end_trim, revision.user_mutes, revision.user_volumes, clip.id);
     logActivity(clip, req.user.userId, 'rollback', { fromRevisionId: clip.current_revision_id, toRevisionId: revision.id });
   })();
@@ -462,6 +504,23 @@ router.post('/:id/restore', (req, res) => {
     logActivity(clip, req.user.userId, 'restore', { expiresAt });
   })();
   res.json(serializeClip(req, getClip(clip.id)));
+});
+
+router.post('/:id/play-in-vc', (req, res) => {
+  const clip = memberClip(req, res);
+  if (!clip) return;
+  const id = db.prepare("INSERT INTO clip_playback_requests(clip_id, guild_id, requested_by, status, created_at) VALUES(?,?,?,'pending',?)")
+    .run(clip.id, clip.guild_id, req.user.userId, Date.now()).lastInsertRowid;
+  res.status(202).json({ request_id: Number(id), status: 'pending' });
+});
+
+router.get('/:id/play-in-vc/:requestId', (req, res) => {
+  const clip = memberClip(req, res);
+  if (!clip) return;
+  const request = db.prepare('SELECT id, status, message FROM clip_playback_requests WHERE id=? AND clip_id=? AND requested_by=?')
+    .get(Number(req.params.requestId), clip.id, req.user.userId);
+  if (!request) return res.status(404).json({ error: 'Playback request not found.' });
+  res.json({ request_id: request.id, status: request.status, message: request.message });
 });
 
 module.exports = router;
