@@ -26,7 +26,9 @@ router.get('/:guild/install-url', (req, res) => {
   if (!guild || !req.user.roleAdminGuilds?.includes(guildId)) return res.status(403).json({ error: 'Manage Server permission is required to install the bot.' });
   if (db.prepare('SELECT 1 FROM servers WHERE guild_id=? AND bot_present=1').get(guildId)) return res.status(409).json({ error: 'The bot is already installed in this server.' });
   if (!config.discord?.clientId) return res.status(503).json({ error: 'Discord application ID is not configured.' });
-  const permissions = 1024n | 2048n | 16384n | 32768n | 1048576n | 2097152n | 33554432n;
+  // Read Message History is what lets the bot re-fetch its own clip posts to edit them. Without it
+  // the fetch 403s, syncClipMessage reads that as a deleted message, and the clip loses its link.
+  const permissions = 1024n | 2048n | 16384n | 32768n | 65536n | 1048576n | 2097152n | 33554432n;
   const params = new URLSearchParams({ client_id:config.discord.clientId, scope:'bot applications.commands', permissions:String(permissions), guild_id:guildId, disable_guild_select:'true' });
   res.json({ url:`https://discord.com/oauth2/authorize?${params}` });
 });
